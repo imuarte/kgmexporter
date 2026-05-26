@@ -1,8 +1,9 @@
 # kgmexporter
 
-WPF app to save Kogama maps as `.kgmap` and convert them to `.glb` for Blender.
+Save Kogama maps to your computer and open them in Blender.
 
-- **Save** tab: paste a Kogama URL, exports the world as `.kgmap`.
-- **Convert** tab: pick a `.kgmap`, exports `.glb` with embedded atlas.
+Paste a map URL, click save - you get a `.kgmap` file with the whole world in it. Then use the Convert tab to turn it into a `.glb` you can drag into Blender.
 
-Avatar-editor join works after signing in.
+Sign in if you want to grab avatar-editor maps.
+
+Please share what you save on [archive.org](https://archive.org/upload) so Kogama maps don't get lost.
