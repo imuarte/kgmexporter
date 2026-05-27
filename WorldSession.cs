@@ -102,6 +102,9 @@ internal sealed class WorldSession
     }
 }
 
+internal sealed class ServerLogicDisconnectException()
+    : Exception("Server closed the connection with DisconnectedByServerLogic.");
+
 internal static class WorldOpener
 {
     public static async Task<WorldSession?> OpenAsync(
@@ -127,6 +130,8 @@ internal static class WorldOpener
         client.OnRawWorldData += data => ws.NoteRawBytes(data?.Length ?? 0);
         client.OnGameBatchChunk += (queryId, data, _, dataLeft) => ws.FeedBatchChunk(queryId, data, dataLeft);
         client.OnGameSnapshotChunk += (_, data, dataLeft) => ws.FeedSnapshotChunk(data, dataLeft);
+        client.OnServerLogicDisconnect += () =>
+            ready.TrySetException(new ServerLogicDisconnectException());
 
         await client.ConnectAsync(worldId!, region, mode: mode, ownerProfileId: profileId, sessionType: sessionType);
         return ws;

@@ -146,6 +146,11 @@ public partial class MainWindow : Window
                         SetStatus($"[{i + 1}/{games.Count}] {game.Id} '{game.Name}': {status}"));
                     saved++;
                 }
+                catch (ServerLogicDisconnectException)
+                {
+                    skipped++;
+                    SetStatus($"[{i + 1}/{games.Count}] {game.Id} '{game.Name}': skipped (DisconnectedByServerLogic).");
+                }
                 catch (Exception ex)
                 {
                     failed++;
