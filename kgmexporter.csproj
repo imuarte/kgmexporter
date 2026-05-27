@@ -37,7 +37,7 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="KgmapExport.cs" />
-    <Compile Include="KgmapToGlb.cs" />
+    <Compile Include="KgmapToObj.cs" />
     <Compile Include="GlobalUsings.cs" />
     <ApplicationDefinition Include="App.xaml">
       <Generator>MSBuild:Compile</Generator>

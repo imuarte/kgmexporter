@@ -1,3 +1,4 @@
+using System.IO;
 using KogamaScripts;
 
 namespace KgmExporter;
@@ -6,6 +7,10 @@ internal sealed class WorldSession
 {
     private long _lastWorldDataTicks = DateTime.UtcNow.Ticks;
     private long _rawBytesReceived;
+    private readonly List<byte[]> _batches = new();
+    private readonly object _batchLock = new();
+    private readonly Dictionary<int, MemoryStream> _pendingBatches = new();
+    private readonly MemoryStream _pendingSnapshot = new();
 
     public WorldSession(KogamaClient client, string worldId, TaskCompletionSource ready)
     {
@@ -21,11 +26,48 @@ internal sealed class WorldSession
 
     public event Action<long>? OnBytesProgress;
 
-    public void NoteRawData(int byteCount)
+    public void NoteRawBytes(int byteCount)
     {
+        if (byteCount <= 0) return;
         long total = Interlocked.Add(ref _rawBytesReceived, byteCount);
         Interlocked.Exchange(ref _lastWorldDataTicks, DateTime.UtcNow.Ticks);
         OnBytesProgress?.Invoke(total);
+    }
+
+    public void FeedBatchChunk(int queryId, byte[] data, bool dataLeft)
+    {
+        lock (_batchLock)
+        {
+            if (data != null && data.Length > 0)
+            {
+                if (!_pendingBatches.TryGetValue(queryId, out var buf))
+                    _pendingBatches[queryId] = buf = new MemoryStream();
+                buf.Write(data, 0, data.Length);
+            }
+
+            if (!dataLeft && _pendingBatches.Remove(queryId, out var complete) && complete.Length > 0)
+                _batches.Add(complete.ToArray());
+        }
+    }
+
+    public void FeedSnapshotChunk(byte[] data, bool dataLeft)
+    {
+        lock (_batchLock)
+        {
+            if (data != null && data.Length > 0)
+                _pendingSnapshot.Write(data, 0, data.Length);
+
+            if (!dataLeft && _pendingSnapshot.Length > 0)
+            {
+                _batches.Add(_pendingSnapshot.ToArray());
+                _pendingSnapshot.SetLength(0);
+            }
+        }
+    }
+
+    public IReadOnlyList<byte[]> SnapshotBatches()
+    {
+        lock (_batchLock) return _batches.ToArray();
     }
 
     public void MarkReady()
@@ -82,7 +124,9 @@ internal static class WorldOpener
         var ws = new WorldSession(client, worldId!, ready);
         client.OnWorldReady += ws.MarkReady;
         client.OnWorldDataActivity += ws.MarkActivity;
-        client.OnRawWorldData += data => ws.NoteRawData(data?.Length ?? 0);
+        client.OnRawWorldData += data => ws.NoteRawBytes(data?.Length ?? 0);
+        client.OnGameBatchChunk += (queryId, data, _, dataLeft) => ws.FeedBatchChunk(queryId, data, dataLeft);
+        client.OnGameSnapshotChunk += (_, data, dataLeft) => ws.FeedSnapshotChunk(data, dataLeft);
 
         await client.ConnectAsync(worldId!, region, mode: mode, ownerProfileId: profileId, sessionType: sessionType);
         return ws;

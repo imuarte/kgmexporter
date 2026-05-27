@@ -56,9 +56,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        string defaultName = "world.kgmap";
+        if (UrlParser.TryParse(url, out string? worldId, out _, out _, out _, out _)
+            && !string.IsNullOrWhiteSpace(worldId))
+        {
+            defaultName = $"{worldId}.kgmap";
+        }
+
         var dlg = new SaveFileDialog
         {
-            FileName = "world.kgmap",
+            FileName = defaultName,
             Filter = "Kogama map (*.kgmap)|*.kgmap",
             DefaultExt = ".kgmap"
         };
@@ -106,9 +113,9 @@ public partial class MainWindow : Window
 
         var dlg = new SaveFileDialog
         {
-            FileName = Path.GetFileNameWithoutExtension(kgmapPath) + ".glb",
-            Filter = "glTF binary (*.glb)|*.glb",
-            DefaultExt = ".glb"
+            FileName = Path.GetFileNameWithoutExtension(kgmapPath) + ".obj",
+            Filter = "Wavefront OBJ (*.obj)|*.obj",
+            DefaultExt = ".obj"
         };
         if (dlg.ShowDialog(this) != true)
             return;
@@ -118,7 +125,7 @@ public partial class MainWindow : Window
         SetStatus("Converting...");
         try
         {
-            int written = await Task.Run(() => KgmapToGlb.Convert(kgmapPath, outPath));
+            int written = await Task.Run(() => KgmapToObj.Convert(kgmapPath, outPath));
             if (written == 0)
                 throw new InvalidOperationException("No geometry written.");
             var fi = new FileInfo(outPath);
@@ -167,21 +174,20 @@ public partial class MainWindow : Window
                 quietFor: TimeSpan.FromSeconds(5),
                 quietTimeout: TimeSpan.FromSeconds(20));
 
-            int objects = ws.Client.World.Objects.Count;
-            int prototypes = ws.Client.World.Prototypes.Count;
-            if (objects == 0 || prototypes == 0)
-                throw new InvalidOperationException("World loaded but contained no parsed objects.");
+            var batches = ws.SnapshotBatches();
+            if (batches.Count == 0)
+                throw new InvalidOperationException("World produced no data batches.");
 
-            Dispatch(() => SetStatus($"Exporting ({objects} objects)..."));
+            Dispatch(() => SetStatus($"Exporting ({batches.Count} batches, {ws.RawBytesReceived / 1024.0:N1} KB)..."));
 
             int written = await Task.Run(() =>
             {
                 using var stream = File.Create(outPath);
-                return KgmapExport.WriteWorld(stream, ws);
+                return KgmapExport.WriteBatches(stream, batches);
             });
 
             if (written == 0)
-                throw new InvalidOperationException("Export produced no geometry.");
+                throw new InvalidOperationException("Export produced no batches.");
         }
         finally
         {
