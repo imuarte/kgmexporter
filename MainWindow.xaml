@@ -46,6 +46,7 @@
                                         <TextBlock Text="• Game: /games/play/&lt;id&gt;"/>
                                         <TextBlock Text="• Project: /build/&lt;owner&gt;/project/&lt;id&gt;"/>
                                         <TextBlock Text="• Profile: /profile/&lt;id&gt; (saves every game)"/>
+                                        <TextBlock Text="• Profile friends: /profile/&lt;id&gt;/friends/ (saves friends' games)"/>
                                         <TextBlock Text="• My games: /build/ (saves all your own games, needs login)"/>
                                         <TextBlock Text="• Public games: /games/ (saves popular public games)"/>
                                         <TextBlock Margin="0,4,0,0" Text="Domains: www.kogama.com, kogama.com.br, friends.kogama.com"/>

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -22,6 +23,10 @@ public partial class MainWindow : Window
     private bool _loadingArchiveUi;
     private ArchiveUploadQueue? _archiveUploadQueue;
     private readonly ObservableCollection<BotSlotViewModel> _botSlots = new();
+    private static readonly HttpClient FriendListHttp = new()
+    {
+        Timeout = TimeSpan.FromSeconds(60),
+    };
 
     public MainWindow()
     {
@@ -115,6 +120,18 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (UrlParser.TryParseProfileFriends(url, out int friendsProfileId, out var friendsRegion))
+        {
+            if (avatarMode)
+            {
+                SetStatus("Friends URLs download games; use Save .kgmap.", error: true);
+                return;
+            }
+
+            await SaveProfileFriendsAsync(friendsProfileId, friendsRegion);
+            return;
+        }
+
         if (UrlParser.TryParseProfile(url, out int profileId, out var profileRegion))
         {
             await SaveProfileAsync(profileId, profileRegion, avatarMode);
@@ -152,12 +169,26 @@ public partial class MainWindow : Window
         {
             FileName = defaultName,
             Filter = "Kogama map (*.kgmap)|*.kgmap",
-            DefaultExt = ".kgmap"
+            DefaultExt = ".kgmap",
+            AddExtension = true,
+            CheckPathExists = false,
+            InitialDirectory = GetDefaultSaveDirectory(),
+            RestoreDirectory = true
         };
         if (dlg.ShowDialog(this) != true)
             return;
 
         string outPath = dlg.FileName;
+        try
+        {
+            EnsureParentDirectory(outPath);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not create output folder: {ex.Message}", error: true);
+            return;
+        }
+
         var saveCts = new CancellationTokenSource();
         _activeCts = saveCts;
         SetBusy(true);
@@ -528,6 +559,282 @@ public partial class MainWindow : Window
         }
     }
 
+    private sealed record FriendProfileSummary(int Id, string Username);
+
+    private static string RegionBaseUrl(KogamaScripts.KogamaRegion region) => region switch
+    {
+        KogamaScripts.KogamaRegion.Br      => "https://kogama.com.br",
+        KogamaScripts.KogamaRegion.Friends => "https://friends.kogama.com",
+        _                                  => "https://www.kogama.com",
+    };
+
+    private static string RegionHost(KogamaScripts.KogamaRegion region) => region switch
+    {
+        KogamaScripts.KogamaRegion.Br      => "kogama.com.br",
+        KogamaScripts.KogamaRegion.Friends => "friends.kogama.com",
+        _                                  => "www.kogama.com",
+    };
+
+    private static async Task<List<FriendProfileSummary>> FetchFriendProfilesAsync(
+        int profileId,
+        KogamaScripts.KogamaRegion region,
+        Action<string>? onProgress,
+        CancellationToken ct)
+    {
+        var friends = new List<FriendProfileSummary>();
+        var seen = new HashSet<int>();
+        string baseUrl = RegionBaseUrl(region);
+        const int count = 100;
+
+        for (int page = 1; page <= 1000; page++)
+        {
+            ct.ThrowIfCancellationRequested();
+            onProgress?.Invoke($"Listing friends for profile {profileId}: page {page}, {friends.Count} found...");
+
+            var url = $"{baseUrl}/user/{profileId}/friend/?count={count}&page={page}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Accept.ParseAdd("application/json, text/plain, */*");
+            request.Headers.Referrer = new Uri($"{baseUrl}/profile/{profileId}/friends/");
+            request.Headers.TryAddWithoutValidation(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36");
+
+            using var response = await FriendListHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"friend list HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                break;
+
+            int entries = 0;
+            foreach (var entry in data.EnumerateArray())
+            {
+                entries++;
+                if (entry.TryGetProperty("friend_status", out var status) &&
+                    !string.Equals(status.GetString(), "accepted", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!entry.TryGetProperty("friend_profile_id", out var idProp) ||
+                    !idProp.TryGetInt32(out int friendId))
+                {
+                    continue;
+                }
+
+                if (!seen.Add(friendId))
+                    continue;
+
+                string username = entry.TryGetProperty("friend_username", out var usernameProp)
+                    ? usernameProp.GetString() ?? ""
+                    : "";
+                friends.Add(new FriendProfileSummary(friendId, username));
+            }
+
+            if (entries == 0)
+                break;
+
+            if (doc.RootElement.TryGetProperty("paging", out var paging) &&
+                paging.TryGetProperty("pages", out var pages) &&
+                pages.TryGetInt32(out int pageTotal) &&
+                page >= pageTotal)
+            {
+                break;
+            }
+        }
+
+        return friends;
+    }
+
+    private async Task SaveProfileFriendsAsync(int profileId, KogamaScripts.KogamaRegion region)
+    {
+        var folderDlg = new OpenFolderDialog
+        {
+            Title = $"Pick output folder for friends of profile {profileId}"
+        };
+        if (folderDlg.ShowDialog(this) != true)
+            return;
+
+        string outDir = folderDlg.FolderName;
+        int botCount = GetBotCount();
+        var connectionLimiter = CreateBulkConnectionLimiter();
+        bool skipExisting = SkipExistingBox.IsChecked == true;
+        bool skipArchiveExisting = ShouldSkipArchiveExisting();
+        bool asGuest = LocalAuth.LoadSession() == null;
+        _activeCts = new CancellationTokenSource();
+        var ct = _activeCts.Token;
+        SetBusy(true);
+        SetStatus($"Listing friends for profile {profileId}...");
+
+        if (asGuest) Auth.ClearCookies();
+        else LocalAuth.LoadCookies();
+
+        int saved = 0, failed = 0, skipped = 0, corrupted = 0;
+        try
+        {
+            var friends = await FetchFriendProfilesAsync(
+                profileId,
+                region,
+                msg => Dispatch(() => SetStatus(msg)),
+                ct);
+            if (friends.Count == 0)
+            {
+                SetStatus($"Profile {profileId} has no public friends.", error: true);
+                return;
+            }
+
+            var games = new List<UserGameSummary>();
+            var seenGameIds = new HashSet<int>();
+            int profilesWithNoGames = 0;
+            for (int i = 0; i < friends.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var friend = friends[i];
+                string friendLabel = string.IsNullOrWhiteSpace(friend.Username)
+                    ? friend.Id.ToString()
+                    : $"{friend.Username} ({friend.Id})";
+                SetStatus($"Listing games for friend {i + 1}/{friends.Count}: {friendLabel} - {games.Count} games so far...");
+
+                var friendGames = await KogamaScripts.WebApi.GetUserGamesAsync(friend.Id, region);
+                if (friendGames.Count == 0)
+                    profilesWithNoGames++;
+
+                foreach (var game in friendGames)
+                {
+                    if (!seenGameIds.Add(game.Id))
+                        continue;
+
+                    games.Add(new UserGameSummary(game.Id, game.Name, friend.Id, friend.Username));
+                }
+            }
+
+            if (games.Count == 0)
+            {
+                SetStatus($"Listed {friends.Count} friends, but none had public games.", error: true);
+                return;
+            }
+
+            SetStatus($"Listed {games.Count} games from {friends.Count} friends, starting downloads...");
+            string regionHost = RegionHost(region);
+            int total = games.Count;
+
+            using var summaryTimer = StartBatchSummaryTimer(
+                $"Friends of {profileId}",
+                total,
+                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref corrupted), Volatile.Read(ref failed)));
+
+            await RunWithBotSlotsAsync(botCount, games, async (game, slot, token) =>
+            {
+                string fileName = BuildFileName(false, GameMode.Play, game.Id.ToString(), region);
+                string outPath = Path.Combine(outDir, fileName);
+                DeleteZeroByteFileIfPresent(outPath);
+                if (skipExisting && IsNonEmptyFile(outPath))
+                {
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already in folder");
+                    return;
+                }
+
+                if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
+                {
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already on archive.org");
+                    return;
+                }
+
+                string gameUrl = $"https://{regionHost}/games/play/{game.Id}/";
+                try
+                {
+                    const int corruptionRetries = 3;
+                    bool ok = false;
+                    for (int attempt = 1; attempt <= corruptionRetries; attempt++)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        int attemptCopy = attempt;
+                        string attemptLabel = attemptCopy > 1 ? $" (try {attemptCopy})" : "";
+                        Action<string> onStatus = status =>
+                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel}: {status}");
+                        try
+                        {
+                            var meta = new KgmapMetadata(
+                                GameId: game.Id.ToString(),
+                                GameTitle: game.Name,
+                                OwnerProfileId: game.OwnerId,
+                                OwnerUsername: game.OwnerName,
+                                Region: RegionTag(region));
+                            if (connectionLimiter.HasDelay)
+                                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel} - waiting...");
+                            await connectionLimiter.WaitAsync(token);
+                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel} - connecting...");
+                            await SaveMapAsync(gameUrl, outPath, avatarMode: false, onStatus: onStatus, asGuest: asGuest, metadata: meta, ct: token);
+                            ok = true;
+                            break;
+                        }
+                        catch (ServerLogicDisconnectException)
+                        {
+                            if (attempt < corruptionRetries)
+                            {
+                                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - disconnected, retry {attempt + 1}/{corruptionRetries}...");
+                                await Task.Delay(750, token);
+                            }
+                        }
+                    }
+
+                    if (ok)
+                    {
+                        Interlocked.Increment(ref saved);
+                        UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - saved");
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref corrupted);
+                        UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - corrupted, skipped");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref failed);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - failed: {Truncate(ex.Message, 40)}");
+                    await Task.Delay(500, token);
+                }
+            }, ct);
+
+            string summary = $"Friends of {profileId}: {saved} saved";
+            if (skipped > 0) summary += $", {skipped} skipped";
+            if (corrupted > 0) summary += $", {corrupted} corrupted";
+            if (failed > 0) summary += $", {failed} failed";
+            if (profilesWithNoGames > 0) summary += $", {profilesWithNoGames} friends had no public games";
+            summary += $" (of {total} games from {friends.Count} friends) -> {outDir}";
+            SetStatus(summary, error: failed > 0 && saved == 0);
+        }
+        catch (OperationCanceledException)
+        {
+            string s = $"Cancelled. Friends of {profileId}: {saved} saved";
+            if (skipped > 0) s += $", {skipped} skipped";
+            if (corrupted > 0) s += $", {corrupted} corrupted";
+            if (failed > 0) s += $", {failed} failed";
+            SetStatus(s);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Friend listing failed: {ex.Message}", error: true);
+        }
+        finally
+        {
+            Auth.ClearCookies();
+            LocalAuth.LoadCookies();
+            _activeCts?.Dispose();
+            _activeCts = null;
+            SetBusy(false);
+        }
+    }
+
     private async Task SavePublicGamesAsync(KogamaScripts.KogamaRegion region, bool avatarMode)
     {
         var folderDlg = new OpenFolderDialog
@@ -836,6 +1143,29 @@ public partial class MainWindow : Window
         if (int.TryParse(ConnectionDelayBox.Text?.Trim(), out int n))
             return Math.Clamp(n, 0, 60_000);
         return 5000;
+    }
+
+    private static string GetDefaultSaveDirectory()
+    {
+        foreach (string path in new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        })
+        {
+            if (!string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+                return path;
+        }
+
+        return Environment.CurrentDirectory;
+    }
+
+    private static void EnsureParentDirectory(string filePath)
+    {
+        string? dir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
     }
 
     private static bool IsNonEmptyFile(string path)
