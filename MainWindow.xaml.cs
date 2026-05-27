@@ -145,7 +145,7 @@ public partial class MainWindow : Window
         if (UrlParser.TryParse(url, out string? worldId, out parsedOwnerId, out parsedRegion, out parsedMode, out _)
             && !string.IsNullOrWhiteSpace(worldId))
         {
-            defaultName = BuildFileName(avatarMode, parsedMode, worldId);
+            defaultName = BuildFileName(avatarMode, parsedMode, worldId, parsedRegion);
         }
 
         var dlg = new SaveFileDialog
@@ -220,20 +220,21 @@ public partial class MainWindow : Window
     }
 
     // Filename convention:
-    //   play  → "<gameId>.kgmap"
-    //   build → "build_<gameId>.kgmap"
-    //   avatar → "avatar_<myProfileId>.kgmap"  (gameId is irrelevant - the
-    //            avatar is yours and the iterated game just gives us a world
-    //            to connect through; we want one file per identity, not per game)
-    private static string BuildFileName(bool avatarMode, GameMode urlMode, string gameId)
+    //   play   -> "<gameId>.kgmap" for www, "<region>_<gameId>.kgmap" elsewhere
+    //   build  -> "<region>_build_<gameId>.kgmap"
+    //   avatar -> "<region>_avatar_<myProfileId>.kgmap"
+    private static string BuildFileName(bool avatarMode, GameMode urlMode, string gameId, KogamaScripts.KogamaRegion region)
     {
+        string prefix = RegionTag(region);
         if (avatarMode)
         {
             int profileId = LocalAuth.LoadSession()?.ProfileId ?? 0;
-            return $"avatar_{profileId}.kgmap";
+            return $"{prefix}_avatar_{profileId}.kgmap";
         }
-        if (urlMode == GameMode.Build) return $"build_{gameId}.kgmap";
-        return $"{gameId}.kgmap";
+        if (urlMode == GameMode.Play && region == KogamaScripts.KogamaRegion.Www)
+            return $"{gameId}.kgmap";
+        if (urlMode == GameMode.Build) return $"{prefix}_build_{gameId}.kgmap";
+        return $"{prefix}_{gameId}.kgmap";
     }
 
     private static string RegionTag(KogamaScripts.KogamaRegion r) => r switch
@@ -249,13 +250,13 @@ public partial class MainWindow : Window
         return value.Length <= max ? value : value[..(max - 1)] + "…";
     }
 
-    private IDisposable StartBatchSummaryTimer(string label, int total, Func<(int saved, int skipped, int failed)> read)
+    private IDisposable StartBatchSummaryTimer(string label, int total, Func<(int saved, int skipped, int corrupted, int failed)> read)
     {
         var timer = new System.Threading.Timer(_ =>
         {
-            var (saved, skipped, failed) = read();
-            int done = saved + skipped + failed;
-            string text = $"{label}: {done}/{total} done  saved={saved}  skipped={skipped}  failed={failed}";
+            var (saved, skipped, corrupted, failed) = read();
+            int done = saved + skipped + corrupted + failed;
+            string text = $"{label}: {done}/{total} done  saved={saved}  skipped={skipped}  corrupted={corrupted}  failed={failed}";
             Dispatch(() => SetStatus(text));
         }, null, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
         return timer;
@@ -332,6 +333,41 @@ public partial class MainWindow : Window
         }
     }
 
+    private sealed class BulkConnectionLimiter
+    {
+        private readonly TimeSpan _minimumGap;
+        private readonly SemaphoreSlim _gate = new(1, 1);
+        private DateTime _nextStartUtc = DateTime.MinValue;
+
+        public BulkConnectionLimiter(TimeSpan minimumGap)
+            => _minimumGap = minimumGap;
+
+        public bool HasDelay => _minimumGap > TimeSpan.Zero;
+
+        public async Task WaitAsync(CancellationToken ct)
+        {
+            if (_minimumGap <= TimeSpan.Zero)
+                return;
+
+            await _gate.WaitAsync(ct);
+            try
+            {
+                DateTime now = DateTime.UtcNow;
+                if (_nextStartUtc > now)
+                    await Task.Delay(_nextStartUtc - now, ct);
+
+                _nextStartUtc = DateTime.UtcNow + _minimumGap;
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+    }
+
+    private BulkConnectionLimiter CreateBulkConnectionLimiter()
+        => new(TimeSpan.FromMilliseconds(GetConnectionDelayMs()));
+
     private async Task SaveProfileAsync(int profileId, KogamaScripts.KogamaRegion region, bool avatarMode)
     {
         var folderDlg = new OpenFolderDialog
@@ -343,12 +379,13 @@ public partial class MainWindow : Window
 
         string outDir = folderDlg.FolderName;
         int botCount = GetBotCount();
+        var connectionLimiter = CreateBulkConnectionLimiter();
         bool skipExisting = SkipExistingBox.IsChecked == true;
         bool skipArchiveExisting = ShouldSkipArchiveExisting();
         // Own profile must use logged-in cookies so private/build-mode games are reachable.
         var ownSession = LocalAuth.LoadSession();
         bool isOwnProfile = ownSession != null && ownSession.ProfileId == profileId;
-        bool asGuest = !isOwnProfile && GuestModeBox.IsChecked == true;
+        bool asGuest = ownSession == null;
         _activeCts = new CancellationTokenSource();
         var ct = _activeCts.Token;
         SetBusy(true);
@@ -359,7 +396,7 @@ public partial class MainWindow : Window
         if (asGuest) Auth.ClearCookies();
         else LocalAuth.LoadCookies();
 
-        int saved = 0, failed = 0, skipped = 0;
+        int saved = 0, failed = 0, skipped = 0, corrupted = 0;
         try
         {
             var games = await KogamaScripts.WebApi.GetUserGamesAsync(profileId, region);
@@ -381,13 +418,14 @@ public partial class MainWindow : Window
             using var summaryTimer = StartBatchSummaryTimer(
                 $"Profile {profileId}",
                 total,
-                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref failed)));
+                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref corrupted), Volatile.Read(ref failed)));
 
             await RunWithBotSlotsAsync(botCount, games, async (game, slot, token) =>
             {
-                string fileName = BuildFileName(avatarMode, GameMode.Play, game.Id.ToString());
+                string fileName = BuildFileName(avatarMode, GameMode.Play, game.Id.ToString(), region);
                 string outPath = Path.Combine(outDir, fileName);
-                if (skipExisting && File.Exists(outPath))
+                DeleteZeroByteFileIfPresent(outPath);
+                if (skipExisting && IsNonEmptyFile(outPath))
                 {
                     Interlocked.Increment(ref skipped);
                     UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already in folder");
@@ -402,7 +440,6 @@ public partial class MainWindow : Window
                 }
 
                 string gameUrl = $"https://{regionHost}/games/play/{game.Id}/";
-                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - connecting...");
                 try
                 {
                     const int corruptionRetries = 3;
@@ -411,8 +448,9 @@ public partial class MainWindow : Window
                     {
                         token.ThrowIfCancellationRequested();
                         int attemptCopy = attempt;
+                        string attemptLabel = attemptCopy > 1 ? $" (try {attemptCopy})" : "";
                         Action<string> onStatus = status =>
-                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{(attemptCopy > 1 ? $" (try {attemptCopy})" : "")}: {status}");
+                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel}: {status}");
                         try
                         {
                             var meta = new KgmapMetadata(
@@ -420,6 +458,10 @@ public partial class MainWindow : Window
                                 GameTitle: game.Name,
                                 OwnerProfileId: profileId,
                                 Region: RegionTag(region));
+                            if (connectionLimiter.HasDelay)
+                                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel} - waiting...");
+                            await connectionLimiter.WaitAsync(token);
+                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel} - connecting...");
                             await SaveMapAsync(gameUrl, outPath, avatarMode: avatarMode, onStatus, asGuest: asGuest && !avatarMode, metadata: meta, ct: token);
                             ok = true;
                             break;
@@ -441,7 +483,7 @@ public partial class MainWindow : Window
                     }
                     else
                     {
-                        Interlocked.Increment(ref skipped);
+                        Interlocked.Increment(ref corrupted);
                         UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - corrupted, skipped");
                     }
                 }
@@ -459,6 +501,7 @@ public partial class MainWindow : Window
 
             string summary = $"Profile {profileId}: {saved} saved";
             if (skipped > 0) summary += $", {skipped} skipped";
+            if (corrupted > 0) summary += $", {corrupted} corrupted";
             if (failed > 0) summary += $", {failed} failed";
             summary += $" (of {games.Count}) -> {outDir}";
             SetStatus(summary, error: failed > 0 && saved == 0);
@@ -467,6 +510,7 @@ public partial class MainWindow : Window
         {
             string s = $"Cancelled. Profile {profileId}: {saved} saved";
             if (skipped > 0) s += $", {skipped} skipped";
+            if (corrupted > 0) s += $", {corrupted} corrupted";
             if (failed > 0) s += $", {failed} failed";
             SetStatus(s);
         }
@@ -495,9 +539,10 @@ public partial class MainWindow : Window
 
         string outDir = folderDlg.FolderName;
         int botCount = GetBotCount();
+        var connectionLimiter = CreateBulkConnectionLimiter();
         bool skipExisting = SkipExistingBox.IsChecked == true;
         bool skipArchiveExisting = ShouldSkipArchiveExisting();
-        bool asGuest = GuestModeBox.IsChecked == true;
+        bool asGuest = LocalAuth.LoadSession() == null;
         _activeCts = new CancellationTokenSource();
         var ct = _activeCts.Token;
         SetBusy(true);
@@ -506,7 +551,7 @@ public partial class MainWindow : Window
         if (asGuest) Auth.ClearCookies();
         else LocalAuth.LoadCookies();
 
-        int saved = 0, failed = 0, skipped = 0;
+        int saved = 0, failed = 0, skipped = 0, corrupted = 0;
         try
         {
             var games = await KogamaScripts.WebApi.GetPublicGamesAsync(
@@ -532,13 +577,14 @@ public partial class MainWindow : Window
             using var summaryTimer = StartBatchSummaryTimer(
                 "Public games",
                 total,
-                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref failed)));
+                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref corrupted), Volatile.Read(ref failed)));
 
             await RunWithBotSlotsAsync(botCount, games, async (game, slot, token) =>
             {
-                string fileName = BuildFileName(avatarMode, GameMode.Play, game.Id.ToString());
+                string fileName = BuildFileName(avatarMode, GameMode.Play, game.Id.ToString(), region);
                 string outPath = Path.Combine(outDir, fileName);
-                if (skipExisting && File.Exists(outPath))
+                DeleteZeroByteFileIfPresent(outPath);
+                if (skipExisting && IsNonEmptyFile(outPath))
                 {
                     Interlocked.Increment(ref skipped);
                     UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already in folder");
@@ -553,7 +599,6 @@ public partial class MainWindow : Window
                 }
 
                 string gameUrl = $"https://{regionHost}/games/play/{game.Id}/";
-                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - connecting...");
                 try
                 {
                     const int corruptionRetries = 3;
@@ -562,8 +607,9 @@ public partial class MainWindow : Window
                     {
                         token.ThrowIfCancellationRequested();
                         int attemptCopy = attempt;
+                        string attemptLabel = attemptCopy > 1 ? $" (try {attemptCopy})" : "";
                         Action<string> onStatus = status =>
-                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{(attemptCopy > 1 ? $" (try {attemptCopy})" : "")}: {status}");
+                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel}: {status}");
                         try
                         {
                             var meta = new KgmapMetadata(
@@ -572,6 +618,10 @@ public partial class MainWindow : Window
                                 OwnerProfileId: game.OwnerId,
                                 OwnerUsername: game.OwnerName,
                                 Region: RegionTag(region));
+                            if (connectionLimiter.HasDelay)
+                                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel} - waiting...");
+                            await connectionLimiter.WaitAsync(token);
+                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{attemptLabel} - connecting...");
                             await SaveMapAsync(gameUrl, outPath, avatarMode: avatarMode, onStatus, asGuest: asGuest && !avatarMode, metadata: meta, ct: token);
                             ok = true;
                             break;
@@ -593,7 +643,7 @@ public partial class MainWindow : Window
                     }
                     else
                     {
-                        Interlocked.Increment(ref skipped);
+                        Interlocked.Increment(ref corrupted);
                         UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - corrupted, skipped");
                     }
                 }
@@ -611,6 +661,7 @@ public partial class MainWindow : Window
 
             string summary = $"Public games: {saved} saved";
             if (skipped > 0) summary += $", {skipped} skipped";
+            if (corrupted > 0) summary += $", {corrupted} corrupted";
             if (failed > 0) summary += $", {failed} failed";
             summary += $" (of {total}) -> {outDir}";
             SetStatus(summary, error: failed > 0 && saved == 0);
@@ -619,6 +670,7 @@ public partial class MainWindow : Window
         {
             string s = $"Cancelled. Public games: {saved} saved";
             if (skipped > 0) s += $", {skipped} skipped";
+            if (corrupted > 0) s += $", {corrupted} corrupted";
             if (failed > 0) s += $", {failed} failed";
             SetStatus(s);
         }
@@ -654,6 +706,7 @@ public partial class MainWindow : Window
 
         string outDir = folderDlg.FolderName;
         int botCount = GetBotCount();
+        var connectionLimiter = CreateBulkConnectionLimiter();
         bool skipExisting = SkipExistingBox.IsChecked == true;
         bool skipArchiveExisting = ShouldSkipArchiveExisting();
         _activeCts = new CancellationTokenSource();
@@ -663,7 +716,7 @@ public partial class MainWindow : Window
 
         LocalAuth.LoadCookies();
 
-        int saved = 0, failed = 0, skipped = 0;
+        int saved = 0, failed = 0, skipped = 0, corrupted = 0;
         try
         {
             var games = await KogamaScripts.WebApi.GetMyGamesAsync(region);
@@ -678,7 +731,7 @@ public partial class MainWindow : Window
             using var summaryTimer = StartBatchSummaryTimer(
                 session.Username,
                 total,
-                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref failed)));
+                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref corrupted), Volatile.Read(ref failed)));
 
             string regionHost = region switch
             {
@@ -689,9 +742,10 @@ public partial class MainWindow : Window
 
             await RunWithBotSlotsAsync(botCount, games, async (game, slot, token) =>
             {
-                string fileName = BuildFileName(avatarMode, GameMode.Build, game.Id.ToString());
+                string fileName = BuildFileName(avatarMode, GameMode.Build, game.Id.ToString(), region);
                 string outPath = Path.Combine(outDir, fileName);
-                if (skipExisting && File.Exists(outPath))
+                DeleteZeroByteFileIfPresent(outPath);
+                if (skipExisting && IsNonEmptyFile(outPath))
                 {
                     Interlocked.Increment(ref skipped);
                     UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already in folder");
@@ -706,6 +760,9 @@ public partial class MainWindow : Window
                 }
 
                 string buildUrl = $"https://{regionHost}/build/{session.ProfileId}/project/{game.Id}/";
+                if (connectionLimiter.HasDelay)
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - waiting...");
+                await connectionLimiter.WaitAsync(token);
                 UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - connecting...");
                 try
                 {
@@ -723,8 +780,8 @@ public partial class MainWindow : Window
                 }
                 catch (ServerLogicDisconnectException)
                 {
-                    Interlocked.Increment(ref skipped);
-                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - skipped (DisconnectedByServerLogic)");
+                    Interlocked.Increment(ref corrupted);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - corrupted, skipped");
                 }
                 catch (OperationCanceledException)
                 {
@@ -740,6 +797,7 @@ public partial class MainWindow : Window
 
             string summary = $"{session.Username}: {saved} saved";
             if (skipped > 0) summary += $", {skipped} skipped";
+            if (corrupted > 0) summary += $", {corrupted} corrupted";
             if (failed > 0) summary += $", {failed} failed";
             summary += $" (of {total}) -> {outDir}";
             SetStatus(summary, error: failed > 0 && saved == 0);
@@ -748,6 +806,7 @@ public partial class MainWindow : Window
         {
             string s = $"Cancelled. {session.Username}: {saved} saved";
             if (skipped > 0) s += $", {skipped} skipped";
+            if (corrupted > 0) s += $", {corrupted} corrupted";
             if (failed > 0) s += $", {failed} failed";
             SetStatus(s);
         }
@@ -770,6 +829,29 @@ public partial class MainWindow : Window
         if (int.TryParse(BotCountBox.Text?.Trim(), out int n) && n > 0)
             return Math.Min(n, MaxBotCount);
         return 1;
+    }
+
+    private int GetConnectionDelayMs()
+    {
+        if (int.TryParse(ConnectionDelayBox.Text?.Trim(), out int n))
+            return Math.Clamp(n, 0, 60_000);
+        return 5000;
+    }
+
+    private static bool IsNonEmptyFile(string path)
+    {
+        try { return File.Exists(path) && new FileInfo(path).Length > 0; }
+        catch { return false; }
+    }
+
+    private static void DeleteZeroByteFileIfPresent(string path)
+    {
+        try
+        {
+            if (File.Exists(path) && new FileInfo(path).Length == 0)
+                File.Delete(path);
+        }
+        catch { }
     }
 
     private bool ShouldSkipArchiveExisting()
@@ -880,6 +962,7 @@ public partial class MainWindow : Window
             await ws.WaitForWorldQuietAsync(
                 quietFor: TimeSpan.FromSeconds(5),
                 ct: ct);
+            ws.ThrowIfServerLogicDisconnected();
 
             var batches = ws.SnapshotBatches();
             if (batches.Count == 0)
@@ -887,14 +970,26 @@ public partial class MainWindow : Window
 
             Dispatch(() => ReportStatus($"Exporting ({batches.Count} batches, {ws.RawBytesReceived / 1024.0:N1} KB)..."));
 
-            int written = await Task.Run(() =>
+            string tempPath = CreateTempMapPath(outPath);
+            try
             {
-                using var stream = File.Create(outPath);
-                return KgmapExport.WriteBatches(stream, batches, metadata);
-            });
+                int written = await Task.Run(() =>
+                {
+                    using var stream = File.Create(tempPath);
+                    return KgmapExport.WriteBatches(stream, batches, metadata);
+                }, ct);
 
-            if (written == 0)
-                throw new InvalidOperationException("Export produced no batches.");
+                var tempInfo = new FileInfo(tempPath);
+                if (written == 0 || tempInfo.Length == 0)
+                    throw new InvalidOperationException("Export produced no data.");
+
+                File.Move(tempPath, outPath, overwrite: true);
+            }
+            catch
+            {
+                DeleteFileQuietly(tempPath);
+                throw;
+            }
 
             progressTimer.Dispose();
             ws.Client.Disconnect();
@@ -907,6 +1002,24 @@ public partial class MainWindow : Window
             if (!disconnected)
                 ws.Client.Disconnect();
         }
+    }
+
+    private static string CreateTempMapPath(string outPath)
+    {
+        string? dir = Path.GetDirectoryName(outPath);
+        string fileName = Path.GetFileName(outPath);
+        string tempName = $".{fileName}.{Guid.NewGuid():N}.tmp";
+        return string.IsNullOrWhiteSpace(dir) ? tempName : Path.Combine(dir, tempName);
+    }
+
+    private static void DeleteFileQuietly(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch { }
     }
 
     private void QueueArchiveUpload(string outPath, KgmapMetadata? metadata)
@@ -935,6 +1048,7 @@ public partial class MainWindow : Window
         SaveAvatarBtn.IsEnabled = !busy;
         GuestModeBox.IsEnabled = !busy;
         BotCountBox.IsEnabled = !busy;
+        ConnectionDelayBox.IsEnabled = !busy;
         SkipExistingBox.IsEnabled = !busy;
         ArchiveAutoUploadBox.IsEnabled = !busy;
         ArchiveDedupBox.IsEnabled = !busy;

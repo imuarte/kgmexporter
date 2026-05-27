@@ -7,6 +7,7 @@ internal sealed class WorldSession
 {
     private long _lastWorldDataTicks = DateTime.UtcNow.Ticks;
     private long _rawBytesReceived;
+    private int _serverLogicDisconnected;
     private readonly List<byte[]> _batches = new();
     private readonly object _batchLock = new();
     private readonly Dictionary<int, MemoryStream> _pendingBatches = new();
@@ -23,6 +24,7 @@ internal sealed class WorldSession
     public string WorldId { get; }
     public TaskCompletionSource Ready { get; }
     public long RawBytesReceived => Volatile.Read(ref _rawBytesReceived);
+    public bool ServerLogicDisconnected => Volatile.Read(ref _serverLogicDisconnected) != 0;
 
     public event Action<long>? OnBytesProgress;
 
@@ -79,13 +81,27 @@ internal sealed class WorldSession
     public void MarkActivity()
         => Interlocked.Exchange(ref _lastWorldDataTicks, DateTime.UtcNow.Ticks);
 
+    public void MarkServerLogicDisconnected()
+    {
+        Interlocked.Exchange(ref _serverLogicDisconnected, 1);
+        Ready.TrySetException(new ServerLogicDisconnectException());
+    }
+
+    public void ThrowIfServerLogicDisconnected()
+    {
+        if (ServerLogicDisconnected)
+            throw new ServerLogicDisconnectException();
+    }
+
     public async Task WaitForWorldQuietAsync(TimeSpan quietFor, CancellationToken ct = default)
     {
         await Ready.Task.WaitAsync(ct);
+        ThrowIfServerLogicDisconnected();
 
         while (true)
         {
             ct.ThrowIfCancellationRequested();
+            ThrowIfServerLogicDisconnected();
 
             DateTime lastActivity = new(Volatile.Read(ref _lastWorldDataTicks), DateTimeKind.Utc);
             TimeSpan idleFor = DateTime.UtcNow - lastActivity;
@@ -139,8 +155,7 @@ internal static class WorldOpener
         client.OnRawWorldData += data => ws.NoteRawBytes(data?.Length ?? 0);
         client.OnGameBatchChunk += (queryId, data, _, dataLeft) => ws.FeedBatchChunk(queryId, data, dataLeft);
         client.OnGameSnapshotChunk += (_, data, dataLeft) => ws.FeedSnapshotChunk(data, dataLeft);
-        client.OnServerLogicDisconnect += () =>
-            ready.TrySetException(new ServerLogicDisconnectException());
+        client.OnServerLogicDisconnect += ws.MarkServerLogicDisconnected;
 
         await client.ConnectAsync(worldId!, region, mode: mode, ownerProfileId: profileId, sessionType: sessionType);
         return ws;

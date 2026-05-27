@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="kgmexporter"
-        Width="440" Height="300"
+        Width="500" Height="330"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanResize"
         MouseLeftButtonDown="Window_MouseLeftButtonDown">
@@ -47,7 +47,7 @@
                                         <TextBlock Text="• Project: /build/&lt;owner&gt;/project/&lt;id&gt;"/>
                                         <TextBlock Text="• Profile: /profile/&lt;id&gt; (saves every game)"/>
                                         <TextBlock Text="• My games: /build/ (saves all your own games, needs login)"/>
-                                        <TextBlock Text="• Public games: /games/ (saves popular public games, guest)"/>
+                                        <TextBlock Text="• Public games: /games/ (saves popular public games)"/>
                                         <TextBlock Margin="0,4,0,0" Text="Domains: www.kogama.com, kogama.com.br, friends.kogama.com"/>
                                     </StackPanel>
                                 </ToolTip>
@@ -78,13 +78,18 @@
                               Unchecked="ArchiveAutoUploadBox_Changed"/>
                     <Expander Grid.Row="2" x:Name="AdvancedExpander" Header="Advanced options" Margin="0,8,0,0" Foreground="Gray">
                         <StackPanel Margin="4,6,0,0">
-                            <CheckBox x:Name="GuestModeBox" IsChecked="True" IsEnabled="False" Visibility="Collapsed"/>
+                            <CheckBox x:Name="GuestModeBox" IsChecked="False" IsEnabled="False" Visibility="Collapsed"/>
                             <CheckBox x:Name="SkipExistingBox" Content="Skip games already in folder" IsChecked="True"/>
                             <CheckBox x:Name="ArchiveDedupBox" Content="Skip maps already on archive.org" IsChecked="True" Margin="0,6,0,0" Checked="ArchiveDedupBox_Changed" Unchecked="ArchiveDedupBox_Changed"/>
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
                                 <TextBlock Text="Bots:" VerticalAlignment="Center" Margin="0,0,6,0"/>
                                 <TextBox x:Name="BotCountBox" Text="1" Width="50" Padding="4,2" TextAlignment="Center"/>
                                 <TextBlock Text="(parallel sessions for profile / my-games / public-games saves)" Foreground="DarkGray" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="Connection delay (ms):" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBox x:Name="ConnectionDelayBox" Text="5000" Width="60" Padding="4,2" TextAlignment="Center"/>
+                                <TextBlock Text="(minimum gap between new bulk map connections)" Foreground="DarkGray" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </StackPanel>
                     </Expander>

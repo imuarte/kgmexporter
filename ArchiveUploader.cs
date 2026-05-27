@@ -36,7 +36,7 @@ internal static class ArchiveUploader
 
     private static readonly HttpClient Http = new()
     {
-        Timeout = TimeSpan.FromMinutes(10),
+        Timeout = TimeSpan.FromMinutes(20),
     };
 
     // Short-timeout client just for HEAD existence checks - we never want one
