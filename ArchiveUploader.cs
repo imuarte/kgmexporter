@@ -39,6 +39,13 @@ internal static class ArchiveUploader
         Timeout = TimeSpan.FromMinutes(10),
     };
 
+    // Short-timeout client just for HEAD existence checks - we never want one
+    // slow archive.org node to hang a per-game pre-flight in a batch loop.
+    private static readonly HttpClient HeadCheckHttp = new()
+    {
+        Timeout = TimeSpan.FromSeconds(5),
+    };
+
     private static readonly SemaphoreSlim UploadGate = new(2, 2);
 
     public static bool TryCreateOptions(AppSettings settings, out ArchiveUploadOptions? options, out string error)
@@ -54,11 +61,16 @@ internal static class ArchiveUploader
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Head, url);
-            using HttpResponseMessage response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            using HttpResponseMessage response = await HeadCheckHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             return response.IsSuccessStatusCode;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
+            // Timeout or network error - treat as "unknown / not found" so the caller falls through to download.
             return false;
         }
     }

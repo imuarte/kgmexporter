@@ -18,6 +18,8 @@ internal sealed class ArchiveUploadQueue : IDisposable
     private int _alreadyExists;
     private int _failed;
 
+    public int PendingCount => Volatile.Read(ref _queued) + Volatile.Read(ref _running);
+
     public ArchiveUploadQueue(Action<string, bool> reportStatus, int workerCount = 2)
     {
         _reportStatus = reportStatus;
@@ -29,7 +31,7 @@ internal sealed class ArchiveUploadQueue : IDisposable
     public void Enqueue(string filePath, KgmapMetadata? metadata, bool skipDuplicates)
     {
         if (_jobs.IsAddingCompleted)
-            return;
+            throw new InvalidOperationException("Archive upload queue is shut down.");
 
         Interlocked.Increment(ref _queued);
         try

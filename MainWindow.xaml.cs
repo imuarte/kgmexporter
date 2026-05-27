@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -18,16 +21,35 @@ public partial class MainWindow : Window
     private bool _busy;
     private bool _loadingArchiveUi;
     private ArchiveUploadQueue? _archiveUploadQueue;
+    private readonly ObservableCollection<BotSlotViewModel> _botSlots = new();
 
     public MainWindow()
     {
         InitializeComponent();
+        BotSlotsPanel.ItemsSource = _botSlots;
         _archiveUploadQueue = new ArchiveUploadQueue((text, error) =>
             Dispatch(() => SetArchiveStatus(text, error)));
+        Closing += MainWindow_Closing;
         Closed += (_, _) => _archiveUploadQueue?.Dispose();
         LoadArchiveSettingsIntoUi();
         RefreshAccountStatus();
         Loaded += (_, _) => MaybeShowFirstLaunchPrompt();
+    }
+
+    private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        int pending = _archiveUploadQueue?.PendingCount ?? 0;
+        if (pending <= 0) return;
+
+        var result = MessageBox.Show(
+            this,
+            $"{pending} archive.org upload{(pending == 1 ? "" : "s")} still in flight.\n\nQuit anyway and lose them?",
+            "Uploads in progress",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (result != MessageBoxResult.Yes)
+            e.Cancel = true;
     }
 
     private void MaybeShowFirstLaunchPrompt()
@@ -123,7 +145,7 @@ public partial class MainWindow : Window
         if (UrlParser.TryParse(url, out string? worldId, out parsedOwnerId, out parsedRegion, out parsedMode, out _)
             && !string.IsNullOrWhiteSpace(worldId))
         {
-            defaultName = $"{FilenamePrefix(avatarMode, parsedMode)}{worldId}.kgmap";
+            defaultName = BuildFileName(avatarMode, parsedMode, worldId);
         }
 
         var dlg = new SaveFileDialog
@@ -136,18 +158,40 @@ public partial class MainWindow : Window
             return;
 
         string outPath = dlg.FileName;
+        var saveCts = new CancellationTokenSource();
+        _activeCts = saveCts;
+        SetBusy(true);
+
         if (ShouldSkipArchiveExisting())
         {
             SetStatus("Checking archive.org...");
-            if (await ShouldSkipRemoteArchiveFileAsync(Path.GetFileName(outPath), enabled: true, CancellationToken.None))
+            try
             {
-                SetStatus($"{Path.GetFileName(outPath)} is already on archive.org, skipped.");
+                using var preflightCts = CancellationTokenSource.CreateLinkedTokenSource(_activeCts.Token);
+                preflightCts.CancelAfter(TimeSpan.FromSeconds(8));
+                if (await ShouldSkipRemoteArchiveFileAsync(Path.GetFileName(outPath), enabled: true, preflightCts.Token))
+                {
+                    SetStatus($"{Path.GetFileName(outPath)} is already on archive.org, skipped.");
+                    _activeCts?.Dispose();
+                    _activeCts = null;
+                    SetBusy(false);
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (saveCts.IsCancellationRequested)
+            {
+                SetStatus("Cancelled.");
+                _activeCts?.Dispose();
+                _activeCts = null;
+                SetBusy(false);
                 return;
+            }
+            catch (OperationCanceledException)
+            {
+                // Pre-flight timed out; fall through to actually try the save.
             }
         }
 
-        _activeCts = new CancellationTokenSource();
-        SetBusy(true);
         SetStatus("Connecting...");
         try
         {
@@ -155,7 +199,7 @@ public partial class MainWindow : Window
                 GameId: worldId,
                 OwnerProfileId: parsedOwnerId,
                 Region: RegionTag(parsedRegion));
-            await SaveMapAsync(url, outPath, avatarMode, metadata: meta, ct: _activeCts.Token);
+            await SaveMapAsync(url, outPath, avatarMode, metadata: meta, ct: saveCts.Token);
             var fi = new FileInfo(outPath);
             SetStatus($"Saved {fi.Length / 1024.0:N1} KB to {outPath}");
         }
@@ -175,14 +219,21 @@ public partial class MainWindow : Window
         }
     }
 
-    // Filename naming convention: play sessions get no prefix; build/avatar
-    // sessions get a prefix so the same game id can coexist as multiple files
-    // in one folder without clobbering each other.
-    private static string FilenamePrefix(bool avatarMode, GameMode urlMode)
+    // Filename convention:
+    //   play  → "<gameId>.kgmap"
+    //   build → "build_<gameId>.kgmap"
+    //   avatar → "avatar_<myProfileId>.kgmap"  (gameId is irrelevant - the
+    //            avatar is yours and the iterated game just gives us a world
+    //            to connect through; we want one file per identity, not per game)
+    private static string BuildFileName(bool avatarMode, GameMode urlMode, string gameId)
     {
-        if (avatarMode) return "avatar_";
-        if (urlMode == GameMode.Build) return "build_";
-        return "";
+        if (avatarMode)
+        {
+            int profileId = LocalAuth.LoadSession()?.ProfileId ?? 0;
+            return $"avatar_{profileId}.kgmap";
+        }
+        if (urlMode == GameMode.Build) return $"build_{gameId}.kgmap";
+        return $"{gameId}.kgmap";
     }
 
     private static string RegionTag(KogamaScripts.KogamaRegion r) => r switch
@@ -191,6 +242,95 @@ public partial class MainWindow : Window
         KogamaScripts.KogamaRegion.Friends => "friends",
         _                                  => "www",
     };
+
+    private static string Truncate(string? value, int max = 24)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        return value.Length <= max ? value : value[..(max - 1)] + "…";
+    }
+
+    private IDisposable StartBatchSummaryTimer(string label, int total, Func<(int saved, int skipped, int failed)> read)
+    {
+        var timer = new System.Threading.Timer(_ =>
+        {
+            var (saved, skipped, failed) = read();
+            int done = saved + skipped + failed;
+            string text = $"{label}: {done}/{total} done  saved={saved}  skipped={skipped}  failed={failed}";
+            Dispatch(() => SetStatus(text));
+        }, null, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
+        return timer;
+    }
+
+    private void InitBotSlots(int count)
+    {
+        Dispatch(() =>
+        {
+            _botSlots.Clear();
+            for (int i = 0; i < count; i++)
+                _botSlots.Add(new BotSlotViewModel(i));
+            BotSlotsPanel.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        });
+    }
+
+    private void ClearBotSlots()
+    {
+        Dispatch(() =>
+        {
+            _botSlots.Clear();
+            BotSlotsPanel.Visibility = Visibility.Collapsed;
+        });
+    }
+
+    private void UpdateBotSlot(int slot, string text)
+    {
+        Dispatch(() =>
+        {
+            if (slot >= 0 && slot < _botSlots.Count)
+                _botSlots[slot].Text = $"[bot {slot + 1}] {text}";
+        });
+    }
+
+    // Channel + N worker pattern. Each worker owns a fixed slot index so its
+    // status text never collides with another bot's. The channel guarantees
+    // each input item is delivered to exactly one worker, so two bots can
+    // never end up processing the same game id even if the input list had dupes.
+    private async Task RunWithBotSlotsAsync<T>(
+        int botCount,
+        IReadOnlyList<T> items,
+        Func<T, int, CancellationToken, Task> processItem,
+        CancellationToken ct)
+    {
+        InitBotSlots(botCount);
+        try
+        {
+            var channel = Channel.CreateUnbounded<T>(new UnboundedChannelOptions
+            {
+                SingleWriter = true,
+                SingleReader = false,
+            });
+            foreach (var item in items)
+                channel.Writer.TryWrite(item);
+            channel.Writer.Complete();
+
+            var tasks = Enumerable.Range(0, botCount).Select(slot =>
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        await foreach (var item in channel.Reader.ReadAllAsync(ct))
+                            await processItem(item, slot, ct);
+                    }
+                    catch (OperationCanceledException) { }
+                }, ct)
+            ).ToArray();
+
+            await Task.WhenAll(tasks);
+        }
+        finally
+        {
+            ClearBotSlots();
+        }
+    }
 
     private async Task SaveProfileAsync(int profileId, KogamaScripts.KogamaRegion region, bool avatarMode)
     {
@@ -205,11 +345,16 @@ public partial class MainWindow : Window
         int botCount = GetBotCount();
         bool skipExisting = SkipExistingBox.IsChecked == true;
         bool skipArchiveExisting = ShouldSkipArchiveExisting();
-        bool asGuest = GuestModeBox.IsChecked == true;
+        // Own profile must use logged-in cookies so private/build-mode games are reachable.
+        var ownSession = LocalAuth.LoadSession();
+        bool isOwnProfile = ownSession != null && ownSession.ProfileId == profileId;
+        bool asGuest = !isOwnProfile && GuestModeBox.IsChecked == true;
         _activeCts = new CancellationTokenSource();
         var ct = _activeCts.Token;
         SetBusy(true);
-        SetStatus($"Listing games for profile {profileId}...");
+        SetStatus(isOwnProfile
+            ? $"Listing your games (profile {profileId})..."
+            : $"Listing games for profile {profileId}...");
 
         if (asGuest) Auth.ClearCookies();
         else LocalAuth.LoadCookies();
@@ -232,87 +377,85 @@ public partial class MainWindow : Window
             };
 
             int total = games.Count;
-            int started = 0;
-            int running = 0;
 
-            await Parallel.ForEachAsync(
-                games,
-                new ParallelOptions { MaxDegreeOfParallelism = botCount, CancellationToken = ct },
-                async (game, token) =>
+            using var summaryTimer = StartBatchSummaryTimer(
+                $"Profile {profileId}",
+                total,
+                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref failed)));
+
+            await RunWithBotSlotsAsync(botCount, games, async (game, slot, token) =>
+            {
+                string fileName = BuildFileName(avatarMode, GameMode.Play, game.Id.ToString());
+                string outPath = Path.Combine(outDir, fileName);
+                if (skipExisting && File.Exists(outPath))
                 {
-                    int idx = Interlocked.Increment(ref started);
-                    string fileName = $"{FilenamePrefix(avatarMode, GameMode.Play)}{game.Id}.kgmap";
-                    string outPath = Path.Combine(outDir, fileName);
-                    if (skipExisting && File.Exists(outPath))
-                    {
-                        Interlocked.Increment(ref skipped);
-                        Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}' - already saved, skipped."));
-                        return;
-                    }
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already in folder");
+                    return;
+                }
 
-                    if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
-                    {
-                        Interlocked.Increment(ref skipped);
-                        Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}' - already on archive.org, skipped."));
-                        return;
-                    }
+                if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
+                {
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already on archive.org");
+                    return;
+                }
 
-                    string gameUrl = $"https://{regionHost}/games/play/{game.Id}/";
-                    int active = Interlocked.Increment(ref running);
-                    Dispatch(() => SetStatus($"[{idx}/{total}] Connecting to {game.Id} '{game.Name}'... ({active} bot{(active == 1 ? "" : "s")} running)"));
-                    try
+                string gameUrl = $"https://{regionHost}/games/play/{game.Id}/";
+                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - connecting...");
+                try
+                {
+                    const int corruptionRetries = 3;
+                    bool ok = false;
+                    for (int attempt = 1; attempt <= corruptionRetries; attempt++)
                     {
-                        const int corruptionRetries = 3;
-                        ServerLogicDisconnectException? lastDisconnect = null;
-                        bool ok = false;
-                        for (int attempt = 1; attempt <= corruptionRetries; attempt++)
+                        token.ThrowIfCancellationRequested();
+                        int attemptCopy = attempt;
+                        Action<string> onStatus = status =>
+                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{(attemptCopy > 1 ? $" (try {attemptCopy})" : "")}: {status}");
+                        try
                         {
-                            token.ThrowIfCancellationRequested();
-                            int attemptCopy = attempt;
-                            Action<string> onStatus = status => Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}'{(attemptCopy > 1 ? $" (try {attemptCopy})" : "")}: {status}"));
-                            try
+                            var meta = new KgmapMetadata(
+                                GameId: game.Id.ToString(),
+                                GameTitle: game.Name,
+                                OwnerProfileId: profileId,
+                                Region: RegionTag(region));
+                            await SaveMapAsync(gameUrl, outPath, avatarMode: avatarMode, onStatus, asGuest: asGuest && !avatarMode, metadata: meta, ct: token);
+                            ok = true;
+                            break;
+                        }
+                        catch (ServerLogicDisconnectException)
+                        {
+                            if (attempt < corruptionRetries)
                             {
-                                var meta = new KgmapMetadata(
-                                    GameId: game.Id.ToString(),
-                                    GameTitle: game.Name,
-                                    OwnerProfileId: profileId,
-                                    Region: RegionTag(region));
-                                await SaveMapAsync(gameUrl, outPath, avatarMode: avatarMode, onStatus, asGuest: asGuest && !avatarMode, metadata: meta, ct: token);
-                                ok = true;
-                                break;
-                            }
-                            catch (ServerLogicDisconnectException ex)
-                            {
-                                lastDisconnect = ex;
-                                if (attempt < corruptionRetries)
-                                {
-                                    Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}': DisconnectedByServerLogic, retry {attempt + 1}/{corruptionRetries}..."));
-                                    await Task.Delay(750, token);
-                                }
+                                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - disconnected, retry {attempt + 1}/{corruptionRetries}...");
+                                await Task.Delay(750, token);
                             }
                         }
+                    }
 
-                        if (ok)
-                        {
-                            Interlocked.Increment(ref saved);
-                        }
-                        else
-                        {
-                            Interlocked.Increment(ref skipped);
-                            Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}': skipped after {corruptionRetries} DisconnectedByServerLogic attempts (world is corrupted)."));
-                        }
-                    }
-                    catch (Exception ex)
+                    if (ok)
                     {
-                        Interlocked.Increment(ref failed);
-                        Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} failed: {ex.Message}", error: true));
-                        await Task.Delay(500);
+                        Interlocked.Increment(ref saved);
+                        UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - saved");
                     }
-                    finally
+                    else
                     {
-                        Interlocked.Decrement(ref running);
+                        Interlocked.Increment(ref skipped);
+                        UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - corrupted, skipped");
                     }
-                });
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref failed);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - failed: {Truncate(ex.Message, 40)}");
+                    await Task.Delay(500, token);
+                }
+            }, ct);
 
             string summary = $"Profile {profileId}: {saved} saved";
             if (skipped > 0) summary += $", {skipped} skipped";
@@ -385,83 +528,86 @@ public partial class MainWindow : Window
             };
 
             int total = games.Count;
-            int started = 0;
-            int running = 0;
 
-            await Parallel.ForEachAsync(
-                games,
-                new ParallelOptions { MaxDegreeOfParallelism = botCount, CancellationToken = ct },
-                async (game, token) =>
+            using var summaryTimer = StartBatchSummaryTimer(
+                "Public games",
+                total,
+                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref failed)));
+
+            await RunWithBotSlotsAsync(botCount, games, async (game, slot, token) =>
+            {
+                string fileName = BuildFileName(avatarMode, GameMode.Play, game.Id.ToString());
+                string outPath = Path.Combine(outDir, fileName);
+                if (skipExisting && File.Exists(outPath))
                 {
-                    int idx = Interlocked.Increment(ref started);
-                    string fileName = $"{FilenamePrefix(avatarMode, GameMode.Play)}{game.Id}.kgmap";
-                    string outPath = Path.Combine(outDir, fileName);
-                    if (skipExisting && File.Exists(outPath))
-                    {
-                        Interlocked.Increment(ref skipped);
-                        Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}' - already saved, skipped."));
-                        return;
-                    }
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already in folder");
+                    return;
+                }
 
-                    if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
-                    {
-                        Interlocked.Increment(ref skipped);
-                        Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}' - already on archive.org, skipped."));
-                        return;
-                    }
+                if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
+                {
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already on archive.org");
+                    return;
+                }
 
-                    string gameUrl = $"https://{regionHost}/games/play/{game.Id}/";
-                    int active = Interlocked.Increment(ref running);
-                    Dispatch(() => SetStatus($"[{idx}/{total}] Connecting to {game.Id} '{game.Name}'... ({active} bot{(active == 1 ? "" : "s")} running)"));
-                    try
+                string gameUrl = $"https://{regionHost}/games/play/{game.Id}/";
+                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - connecting...");
+                try
+                {
+                    const int corruptionRetries = 3;
+                    bool ok = false;
+                    for (int attempt = 1; attempt <= corruptionRetries; attempt++)
                     {
-                        const int corruptionRetries = 3;
-                        bool ok = false;
-                        for (int attempt = 1; attempt <= corruptionRetries; attempt++)
+                        token.ThrowIfCancellationRequested();
+                        int attemptCopy = attempt;
+                        Action<string> onStatus = status =>
+                            UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}'{(attemptCopy > 1 ? $" (try {attemptCopy})" : "")}: {status}");
+                        try
                         {
-                            token.ThrowIfCancellationRequested();
-                            int attemptCopy = attempt;
-                            Action<string> onStatus = status => Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}'{(attemptCopy > 1 ? $" (try {attemptCopy})" : "")}: {status}"));
-                            try
+                            var meta = new KgmapMetadata(
+                                GameId: game.Id.ToString(),
+                                GameTitle: game.Name,
+                                OwnerProfileId: game.OwnerId,
+                                OwnerUsername: game.OwnerName,
+                                Region: RegionTag(region));
+                            await SaveMapAsync(gameUrl, outPath, avatarMode: avatarMode, onStatus, asGuest: asGuest && !avatarMode, metadata: meta, ct: token);
+                            ok = true;
+                            break;
+                        }
+                        catch (ServerLogicDisconnectException)
+                        {
+                            if (attempt < corruptionRetries)
                             {
-                                var meta = new KgmapMetadata(
-                                    GameId: game.Id.ToString(),
-                                    GameTitle: game.Name,
-                                    OwnerProfileId: game.OwnerId,
-                                    OwnerUsername: game.OwnerName,
-                                    Region: RegionTag(region));
-                                await SaveMapAsync(gameUrl, outPath, avatarMode: avatarMode, onStatus, asGuest: asGuest && !avatarMode, metadata: meta, ct: token);
-                                ok = true;
-                                break;
-                            }
-                            catch (ServerLogicDisconnectException)
-                            {
-                                if (attempt < corruptionRetries)
-                                {
-                                    Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}': DisconnectedByServerLogic, retry {attempt + 1}/{corruptionRetries}..."));
-                                    await Task.Delay(750, token);
-                                }
+                                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - disconnected, retry {attempt + 1}/{corruptionRetries}...");
+                                await Task.Delay(750, token);
                             }
                         }
+                    }
 
-                        if (ok) Interlocked.Increment(ref saved);
-                        else
-                        {
-                            Interlocked.Increment(ref skipped);
-                            Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} '{game.Name}': skipped after {corruptionRetries} DisconnectedByServerLogic attempts (world is corrupted)."));
-                        }
-                    }
-                    catch (Exception ex)
+                    if (ok)
                     {
-                        Interlocked.Increment(ref failed);
-                        Dispatch(() => SetStatus($"[{idx}/{total}] {game.Id} failed: {ex.Message}", error: true));
-                        await Task.Delay(500);
+                        Interlocked.Increment(ref saved);
+                        UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - saved");
                     }
-                    finally
+                    else
                     {
-                        Interlocked.Decrement(ref running);
+                        Interlocked.Increment(ref skipped);
+                        UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - corrupted, skipped");
                     }
-                });
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref failed);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - failed: {Truncate(ex.Message, 40)}");
+                    await Task.Delay(500, token);
+                }
+            }, ct);
 
             string summary = $"Public games: {saved} saved";
             if (skipped > 0) summary += $", {skipped} skipped";
@@ -507,6 +653,7 @@ public partial class MainWindow : Window
             return;
 
         string outDir = folderDlg.FolderName;
+        int botCount = GetBotCount();
         bool skipExisting = SkipExistingBox.IsChecked == true;
         bool skipArchiveExisting = ShouldSkipArchiveExisting();
         _activeCts = new CancellationTokenSource();
@@ -527,34 +674,39 @@ public partial class MainWindow : Window
             }
 
             int total = games.Count;
-            for (int i = 0; i < total; i++)
+
+            using var summaryTimer = StartBatchSummaryTimer(
+                session.Username,
+                total,
+                () => (Volatile.Read(ref saved), Volatile.Read(ref skipped), Volatile.Read(ref failed)));
+
+            string regionHost = region switch
             {
-                ct.ThrowIfCancellationRequested();
-                var game = games[i];
-                string fileName = $"{FilenamePrefix(avatarMode, GameMode.Build)}{game.Id}.kgmap";
+                KogamaScripts.KogamaRegion.Br      => "kogama.com.br",
+                KogamaScripts.KogamaRegion.Friends => "friends.kogama.com",
+                _                                  => "www.kogama.com",
+            };
+
+            await RunWithBotSlotsAsync(botCount, games, async (game, slot, token) =>
+            {
+                string fileName = BuildFileName(avatarMode, GameMode.Build, game.Id.ToString());
                 string outPath = Path.Combine(outDir, fileName);
                 if (skipExisting && File.Exists(outPath))
                 {
-                    skipped++;
-                    SetStatus($"[{i + 1}/{total}] {game.Id} '{game.Name}' - already saved, skipped.");
-                    continue;
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already in folder");
+                    return;
                 }
 
-                if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, ct))
+                if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
                 {
-                    skipped++;
-                    SetStatus($"[{i + 1}/{total}] {game.Id} '{game.Name}' - already on archive.org, skipped.");
-                    continue;
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already on archive.org");
+                    return;
                 }
 
-                string buildUrl = region switch
-                {
-                    KogamaScripts.KogamaRegion.Br      => $"https://kogama.com.br/build/{session.ProfileId}/project/{game.Id}/",
-                    KogamaScripts.KogamaRegion.Friends => $"https://friends.kogama.com/build/{session.ProfileId}/project/{game.Id}/",
-                    _                                  => $"https://www.kogama.com/build/{session.ProfileId}/project/{game.Id}/",
-                };
-
-                SetStatus($"[{i + 1}/{total}] Connecting to {game.Id} '{game.Name}'...");
+                string buildUrl = $"https://{regionHost}/build/{session.ProfileId}/project/{game.Id}/";
+                UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - connecting...");
                 try
                 {
                     var meta = new KgmapMetadata(
@@ -563,14 +715,16 @@ public partial class MainWindow : Window
                         OwnerProfileId: session.ProfileId,
                         OwnerUsername: session.Username,
                         Region: RegionTag(region));
-                    await SaveMapAsync(buildUrl, outPath, avatarMode, status =>
-                        SetStatus($"[{i + 1}/{total}] {game.Id} '{game.Name}': {status}"), metadata: meta, ct: ct);
-                    saved++;
+                    Action<string> onStatus = status =>
+                        UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}': {status}");
+                    await SaveMapAsync(buildUrl, outPath, avatarMode, onStatus, metadata: meta, ct: token);
+                    Interlocked.Increment(ref saved);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - saved");
                 }
                 catch (ServerLogicDisconnectException)
                 {
-                    skipped++;
-                    SetStatus($"[{i + 1}/{total}] {game.Id} '{game.Name}': skipped (DisconnectedByServerLogic).");
+                    Interlocked.Increment(ref skipped);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - skipped (DisconnectedByServerLogic)");
                 }
                 catch (OperationCanceledException)
                 {
@@ -578,11 +732,11 @@ public partial class MainWindow : Window
                 }
                 catch (Exception ex)
                 {
-                    failed++;
-                    SetStatus($"[{i + 1}/{total}] {game.Id} failed: {ex.Message}", error: true);
-                    await Task.Delay(500, ct);
+                    Interlocked.Increment(ref failed);
+                    UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - failed: {Truncate(ex.Message, 40)}");
+                    await Task.Delay(500, token);
                 }
-            }
+            }, ct);
 
             string summary = $"{session.Username}: {saved} saved";
             if (skipped > 0) summary += $", {skipped} skipped";
@@ -609,10 +763,12 @@ public partial class MainWindow : Window
         }
     }
 
+    private const int MaxBotCount = 32;
+
     private int GetBotCount()
     {
         if (int.TryParse(BotCountBox.Text?.Trim(), out int n) && n > 0)
-            return n;
+            return Math.Min(n, MaxBotCount);
         return 1;
     }
 

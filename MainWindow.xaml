@@ -120,6 +120,13 @@
 
         <StackPanel Grid.Row="2" Margin="0,6,0,0">
             <TextBlock x:Name="StatusLabel" Foreground="Gray" FontSize="11"/>
+            <ItemsControl x:Name="BotSlotsPanel" Margin="0,2,0,0" Visibility="Collapsed">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding Text}" FontFamily="Consolas" FontSize="11" Foreground="#444"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
             <TextBlock x:Name="ArchiveStatusLabel" Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
             <TextBlock FontSize="11" Foreground="Gray" Margin="0,4,0,0" TextWrapping="Wrap">
                 Auto-uploaded maps go to

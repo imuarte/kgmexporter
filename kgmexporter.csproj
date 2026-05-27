@@ -71,6 +71,7 @@
     <Compile Include="WorldSession.cs" />
     <Compile Include="LocalAuth.cs" />
     <Compile Include="LocalSettings.cs" />
+    <Compile Include="BotSlotViewModel.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -17,6 +17,8 @@ ITEM = os.environ.get("IA_ITEM", "kogama-maps-kgmexporter")
 SHARED_TOKEN = os.environ.get("PROXY_TOKEN", "")
 
 app = Flask(__name__)
+# Cap incoming uploads at 200 MB so a runaway client can't OOM the VM.
+app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
 
 @app.route("/health")
@@ -57,6 +59,9 @@ def upload():
         "content-type": "application/octet-stream",
     }
 
+    # archive.org S3 requires an explicit Content-Length on PUTs and rejects
+    # chunked transfer-encoding, so we materialise the body once in memory.
+    # The 200 MB Flask cap above protects against runaway clients OOMing the VM.
     body = request.get_data()
     headers["content-length"] = str(len(body))
 
