@@ -50,4 +50,25 @@ internal static class UrlParser
 
         return false;
     }
+
+    public static bool TryParseProfile(string url, out int profileId, out KogamaRegion region)
+    {
+        profileId = 0;
+        region = KogamaRegion.Www;
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+
+        string host = uri.Host;
+        region = host switch
+        {
+            var h when h.Contains("kogama.com.br")      => KogamaRegion.Br,
+            var h when h.Contains("friends.kogama.com") => KogamaRegion.Friends,
+            _                                            => KogamaRegion.Www,
+        };
+
+        var m = Regex.Match(uri.AbsolutePath, @"^/profile/(\d+)");
+        if (!m.Success) return false;
+        profileId = int.Parse(m.Groups[1].Value);
+        return true;
+    }
 }

@@ -56,6 +56,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (UrlParser.TryParseProfile(url, out int profileId, out var profileRegion))
+        {
+            await SaveProfileAsync(profileId, profileRegion, avatarMode);
+            return;
+        }
+
         string defaultName = "world.kgmap";
         if (UrlParser.TryParse(url, out string? worldId, out _, out _, out _, out _)
             && !string.IsNullOrWhiteSpace(worldId))
@@ -84,6 +90,79 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus($"Failed: {ex.Message}", error: true);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private async Task SaveProfileAsync(int profileId, KogamaScripts.KogamaRegion region, bool avatarMode)
+    {
+        var folderDlg = new OpenFolderDialog
+        {
+            Title = $"Pick output folder for profile {profileId}"
+        };
+        if (folderDlg.ShowDialog(this) != true)
+            return;
+
+        string outDir = folderDlg.FolderName;
+        SetBusy(true);
+        SetStatus($"Listing games for profile {profileId}...");
+
+        int saved = 0, failed = 0, skipped = 0;
+        try
+        {
+            var games = await KogamaScripts.WebApi.GetUserGamesAsync(profileId, region);
+            if (games.Count == 0)
+            {
+                SetStatus($"Profile {profileId} has no games (or none are public).", error: true);
+                return;
+            }
+
+            string regionHost = region switch
+            {
+                KogamaScripts.KogamaRegion.Br      => "kogama.com.br",
+                KogamaScripts.KogamaRegion.Friends => "friends.kogama.com",
+                _                                  => "www.kogama.com",
+            };
+
+            for (int i = 0; i < games.Count; i++)
+            {
+                var game = games[i];
+                string outPath = Path.Combine(outDir, $"{game.Id}.kgmap");
+                if (File.Exists(outPath))
+                {
+                    skipped++;
+                    SetStatus($"[{i + 1}/{games.Count}] {game.Id} '{game.Name}' - already saved, skipped.");
+                    continue;
+                }
+
+                string gameUrl = $"https://{regionHost}/games/play/{game.Id}/";
+                SetStatus($"[{i + 1}/{games.Count}] Connecting to {game.Id} '{game.Name}'...");
+                try
+                {
+                    await SaveMapAsync(gameUrl, outPath, avatarMode, status =>
+                        SetStatus($"[{i + 1}/{games.Count}] {game.Id} '{game.Name}': {status}"));
+                    saved++;
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    SetStatus($"[{i + 1}/{games.Count}] {game.Id} failed: {ex.Message}", error: true);
+                    await Task.Delay(500);
+                }
+            }
+
+            string summary = $"Profile {profileId}: {saved} saved";
+            if (skipped > 0) summary += $", {skipped} skipped";
+            if (failed > 0) summary += $", {failed} failed";
+            summary += $" (of {games.Count}) -> {outDir}";
+            SetStatus(summary, error: failed > 0 && saved == 0);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Profile listing failed: {ex.Message}", error: true);
         }
         finally
         {
@@ -141,7 +220,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task SaveMapAsync(string url, string outPath, bool avatarMode)
+    private async Task SaveMapAsync(string url, string outPath, bool avatarMode, Action<string>? onStatus = null)
     {
         GameMode? forceMode = avatarMode ? GameMode.AvatarEdit : null;
         SessionType? forceSession = avatarMode ? SessionType.Character : null;
@@ -149,6 +228,12 @@ public partial class MainWindow : Window
         WorldSession? ws = await WorldOpener.OpenAsync(url, forceMode, forceSession);
         if (ws == null)
             throw new InvalidOperationException("Invalid Kogama URL. Use /games/play/<id> or /build/<owner>/project/<id>.");
+
+        void ReportStatus(string s)
+        {
+            if (onStatus != null) onStatus(s);
+            else SetStatus(s);
+        }
 
         // Drain bytes counter to the status label without spamming the UI thread.
         long lastShownKb = -1;
@@ -162,7 +247,7 @@ public partial class MainWindow : Window
             if (kb != lastShownKb)
             {
                 lastShownKb = kb;
-                SetStatus($"Downloading... {kb:N0} KB");
+                ReportStatus($"Downloading... {kb:N0} KB");
             }
         };
         progressTimer.Start();
@@ -178,7 +263,7 @@ public partial class MainWindow : Window
             if (batches.Count == 0)
                 throw new InvalidOperationException("World produced no data batches.");
 
-            Dispatch(() => SetStatus($"Exporting ({batches.Count} batches, {ws.RawBytesReceived / 1024.0:N1} KB)..."));
+            Dispatch(() => ReportStatus($"Exporting ({batches.Count} batches, {ws.RawBytesReceived / 1024.0:N1} KB)..."));
 
             int written = await Task.Run(() =>
             {

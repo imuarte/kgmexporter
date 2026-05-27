@@ -26,15 +26,47 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <Grid Grid.Row="0">
-                        <TextBox x:Name="UrlBox" Padding="4" TextChanged="UrlBox_TextChanged"/>
-                        <TextBlock x:Name="UrlPlaceholder"
-                                   Text="paste a kogama url"
-                                   Foreground="DarkGray"
-                                   Margin="6,0,0,0"
-                                   VerticalAlignment="Center"
-                                   IsHitTestVisible="False"/>
-                    </Grid>
+                    <DockPanel Grid.Row="0">
+                        <Border DockPanel.Dock="Right"
+                                Width="20" Height="20"
+                                Margin="6,0,0,0"
+                                CornerRadius="10"
+                                BorderBrush="#888" BorderThickness="1"
+                                Background="#EEEEEE"
+                                VerticalAlignment="Center"
+                                Cursor="Help"
+                                ToolTipService.InitialShowDelay="200"
+                                ToolTipService.ShowDuration="20000">
+                            <Border.ToolTip>
+                                <ToolTip>
+                                    <StackPanel>
+                                        <TextBlock FontWeight="Bold" Text="Supported URLs"/>
+                                        <TextBlock Text="• Game: /games/play/&lt;id&gt;"/>
+                                        <TextBlock Text="• Project: /build/&lt;owner&gt;/project/&lt;id&gt;"/>
+                                        <TextBlock Text="• Profile: /profile/&lt;id&gt; (saves every game)"/>
+                                        <TextBlock Margin="0,4,0,0" Text="Domains: www.kogama.com, kogama.com.br, friends.kogama.com"/>
+                                    </StackPanel>
+                                </ToolTip>
+                            </Border.ToolTip>
+                            <TextBlock Text="i"
+                                       FontFamily="Segoe UI"
+                                       FontStyle="Italic"
+                                       FontWeight="Bold"
+                                       FontSize="13"
+                                       Foreground="#444"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"/>
+                        </Border>
+                        <Grid>
+                            <TextBox x:Name="UrlBox" Padding="4" TextChanged="UrlBox_TextChanged"/>
+                            <TextBlock x:Name="UrlPlaceholder"
+                                       Text="paste a kogama game or profile url"
+                                       Foreground="DarkGray"
+                                       Margin="6,0,0,0"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False"/>
+                        </Grid>
+                    </DockPanel>
                     <CheckBox Grid.Row="1" x:Name="AvatarModeBox" Margin="0,8,0,0" Content="Join as avatar editor (needs login)"/>
                     <Button Grid.Row="2" x:Name="SaveBtn" Content="Save .kgmap" Height="28" Margin="0,8,0,0" Click="SaveBtn_Click"/>
                 </Grid>
