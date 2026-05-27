@@ -1,0 +1,18 @@
+[Unit]
+Description=kgmexporter archive.org upload proxy
+After=network.target
+
+[Service]
+Type=simple
+User=archive
+WorkingDirectory=/opt/kgmexporter-proxy
+Environment=IA_ACCESS=REPLACE_WITH_ACCESS_KEY
+Environment=IA_SECRET=REPLACE_WITH_SECRET_KEY
+Environment=IA_ITEM=kogama-maps-kgmexporter
+Environment=PROXY_TOKEN=REPLACE_WITH_RANDOM_SHARED_SECRET
+ExecStart=/opt/kgmexporter-proxy/venv/bin/gunicorn -w 2 -b 0.0.0.0:8080 --timeout 900 proxy:app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

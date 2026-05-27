@@ -71,4 +71,36 @@ internal static class UrlParser
         profileId = int.Parse(m.Groups[1].Value);
         return true;
     }
+
+    public static bool IsBuildRoot(string url, out KogamaRegion region)
+    {
+        region = KogamaRegion.Www;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+
+        string host = uri.Host;
+        region = host switch
+        {
+            var h when h.Contains("kogama.com.br")      => KogamaRegion.Br,
+            var h when h.Contains("friends.kogama.com") => KogamaRegion.Friends,
+            _                                            => KogamaRegion.Www,
+        };
+
+        return Regex.IsMatch(uri.AbsolutePath, @"^/build/?$");
+    }
+
+    public static bool IsGamesListing(string url, out KogamaRegion region)
+    {
+        region = KogamaRegion.Www;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+
+        string host = uri.Host;
+        region = host switch
+        {
+            var h when h.Contains("kogama.com.br")      => KogamaRegion.Br,
+            var h when h.Contains("friends.kogama.com") => KogamaRegion.Friends,
+            _                                            => KogamaRegion.Www,
+        };
+
+        return Regex.IsMatch(uri.AbsolutePath, @"^/games/?$");
+    }
 }

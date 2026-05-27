@@ -36,8 +36,14 @@
       <DependentUpon>LoginWindow.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="FirstLaunchWindow.xaml.cs">
+      <DependentUpon>FirstLaunchWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="KgmapExport.cs" />
     <Compile Include="KgmapToObj.cs" />
+    <Compile Include="ArchiveUploader.cs" />
+    <Compile Include="ArchiveUploadQueue.cs" />
     <Compile Include="GlobalUsings.cs" />
     <ApplicationDefinition Include="App.xaml">
       <Generator>MSBuild:Compile</Generator>
@@ -51,6 +57,10 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
+    <Page Include="FirstLaunchWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\scripts\KogamaScripts.csproj" />
@@ -60,6 +70,7 @@
     <Compile Include="UrlParser.cs" />
     <Compile Include="WorldSession.cs" />
     <Compile Include="LocalAuth.cs" />
+    <Compile Include="LocalSettings.cs" />
   </ItemGroup>
 
   <ItemGroup>

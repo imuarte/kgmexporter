@@ -8,16 +8,16 @@ using KogamaScripts;
 
 namespace KgmExporter;
 
-// Reads the raw .kgmap (v5: list of complete world-data batches) and writes
-// .obj + .mtl + atlas.png. Decoding the batches into prototypes/objects is
-// delegated to KogamaScripts.WorldDumpLoader so kgmexporter never needs to
-// know the on-the-wire layout - it just owns the mesh-building, face culling,
-// UV layout, and material->atlas mapping.
+// Reads the raw .kgmap (v5: batches-only; v6: optional JSON metadata block
+// before the batches) and writes .obj + .mtl + atlas.png. Decoding the batches
+// into prototypes/objects is delegated to KogamaScripts.WorldDumpLoader so
+// kgmexporter never needs to know the on-the-wire layout - it just owns the
+// mesh-building, face culling, UV layout, and material->atlas mapping.
 static class KgmapToObj
 {
     private const uint Magic = 0x504D474B; // "KGMP"
     private const ushort MinVersion = 5;
-    private const ushort MaxVersion = 5;
+    private const ushort MaxVersion = 6;
     private const int AtlasColumns = 16;
     private const int AtlasRows = 5;
     private const bool CullInternalFaces = true;
@@ -57,6 +57,12 @@ static class KgmapToObj
             throw new InvalidDataException(
                 $"Unsupported .kgmap version {version}. " +
                 "Re-save the world with a current kgmexporter build.");
+
+        if (version >= 6)
+        {
+            int metaLen = reader.ReadInt32();
+            if (metaLen > 0) reader.ReadBytes(metaLen); // metadata is informational; skip during conversion
+        }
 
         int batchCount = reader.ReadInt32();
         var batches = new List<byte[]>(batchCount);

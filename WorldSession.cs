@@ -79,13 +79,15 @@ internal sealed class WorldSession
     public void MarkActivity()
         => Interlocked.Exchange(ref _lastWorldDataTicks, DateTime.UtcNow.Ticks);
 
-    public async Task WaitForWorldQuietAsync(TimeSpan readyTimeout, TimeSpan quietFor, TimeSpan quietTimeout)
+    public async Task WaitForWorldQuietAsync(TimeSpan readyTimeout, TimeSpan quietFor, TimeSpan quietTimeout, CancellationToken ct = default)
     {
-        await Ready.Task.WaitAsync(readyTimeout);
+        await Ready.Task.WaitAsync(readyTimeout, ct);
 
         DateTime deadline = DateTime.UtcNow + quietTimeout;
         while (DateTime.UtcNow < deadline)
         {
+            ct.ThrowIfCancellationRequested();
+
             DateTime lastActivity = new(Volatile.Read(ref _lastWorldDataTicks), DateTimeKind.Utc);
             TimeSpan idleFor = DateTime.UtcNow - lastActivity;
             if (idleFor >= quietFor)
@@ -97,7 +99,7 @@ internal sealed class WorldSession
             if (delay > TimeSpan.FromMilliseconds(100))
                 delay = TimeSpan.FromMilliseconds(100);
             if (delay > TimeSpan.Zero)
-                await Task.Delay(delay);
+                await Task.Delay(delay, ct);
         }
     }
 }
@@ -110,7 +112,8 @@ internal static class WorldOpener
     public static async Task<WorldSession?> OpenAsync(
         string url,
         GameMode? forceMode = null,
-        SessionType? forceSessionType = null)
+        SessionType? forceSessionType = null,
+        bool asGuest = false)
     {
         if (!UrlParser.TryParse(url, out string? worldId, out int ownerProfileId, out var region, out var mode, out var sessionType))
             return null;
@@ -118,9 +121,17 @@ internal static class WorldOpener
         if (forceMode.HasValue) mode = forceMode.Value;
         if (forceSessionType.HasValue) sessionType = forceSessionType.Value;
 
-        LocalAuth.LoadCookies();
-        var session = LocalAuth.LoadSession();
-        int profileId = mode == GameMode.Build ? ownerProfileId : session?.ProfileId ?? 0;
+        int profileId;
+        if (asGuest)
+        {
+            profileId = 0;
+        }
+        else
+        {
+            LocalAuth.LoadCookies();
+            var session = LocalAuth.LoadSession();
+            profileId = mode == GameMode.Build ? ownerProfileId : session?.ProfileId ?? 0;
+        }
 
         var client = new KogamaClient();
         var ready = new TaskCompletionSource();

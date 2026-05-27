@@ -4,7 +4,8 @@
         Title="kgmexporter"
         Width="440" Height="300"
         WindowStartupLocation="CenterScreen"
-        ResizeMode="CanMinimize">
+        ResizeMode="CanResize"
+        MouseLeftButtonDown="Window_MouseLeftButtonDown">
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -21,6 +22,7 @@
             <TabItem Header="Save">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
@@ -44,6 +46,8 @@
                                         <TextBlock Text="• Game: /games/play/&lt;id&gt;"/>
                                         <TextBlock Text="• Project: /build/&lt;owner&gt;/project/&lt;id&gt;"/>
                                         <TextBlock Text="• Profile: /profile/&lt;id&gt; (saves every game)"/>
+                                        <TextBlock Text="• My games: /build/ (saves all your own games, needs login)"/>
+                                        <TextBlock Text="• Public games: /games/ (saves popular public games, guest)"/>
                                         <TextBlock Margin="0,4,0,0" Text="Domains: www.kogama.com, kogama.com.br, friends.kogama.com"/>
                                     </StackPanel>
                                 </ToolTip>
@@ -67,8 +71,27 @@
                                        IsHitTestVisible="False"/>
                         </Grid>
                     </DockPanel>
-                    <CheckBox Grid.Row="1" x:Name="AvatarModeBox" Margin="0,8,0,0" Content="Join as avatar editor (needs login)"/>
-                    <Button Grid.Row="2" x:Name="SaveBtn" Content="Save .kgmap" Height="28" Margin="0,8,0,0" Click="SaveBtn_Click"/>
+                    <CheckBox Grid.Row="1" x:Name="ArchiveAutoUploadBox"
+                              Content="Upload saved .kgmap files to archive.org"
+                              Margin="0,8,0,0"
+                              Checked="ArchiveAutoUploadBox_Changed"
+                              Unchecked="ArchiveAutoUploadBox_Changed"/>
+                    <Expander Grid.Row="2" x:Name="AdvancedExpander" Header="Advanced options" Margin="0,8,0,0" Foreground="Gray">
+                        <StackPanel Margin="4,6,0,0">
+                            <CheckBox x:Name="GuestModeBox" IsChecked="True" IsEnabled="False" Visibility="Collapsed"/>
+                            <CheckBox x:Name="SkipExistingBox" Content="Skip games already in folder" IsChecked="True"/>
+                            <CheckBox x:Name="ArchiveDedupBox" Content="Skip maps already on archive.org" IsChecked="True" Margin="0,6,0,0" Checked="ArchiveDedupBox_Changed" Unchecked="ArchiveDedupBox_Changed"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="Bots:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBox x:Name="BotCountBox" Text="1" Width="50" Padding="4,2" TextAlignment="Center"/>
+                                <TextBlock Text="(parallel sessions for profile / my-games / public-games saves)" Foreground="DarkGray" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Expander>
+                    <DockPanel Grid.Row="3" Margin="0,8,0,0">
+                        <Button DockPanel.Dock="Right" x:Name="SaveAvatarBtn" Content="Save avatar" Width="110" Height="28" Margin="6,0,0,0" Click="SaveAvatarBtn_Click"/>
+                        <Button x:Name="SaveBtn" Content="Save .kgmap" Height="28" Click="SaveBtn_Click"/>
+                    </DockPanel>
                 </Grid>
             </TabItem>
             <TabItem Header="Convert">
@@ -97,12 +120,12 @@
 
         <StackPanel Grid.Row="2" Margin="0,6,0,0">
             <TextBlock x:Name="StatusLabel" Foreground="Gray" FontSize="11"/>
+            <TextBlock x:Name="ArchiveStatusLabel" Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
             <TextBlock FontSize="11" Foreground="Gray" Margin="0,4,0,0" TextWrapping="Wrap">
-                Please share what you save on
-                <Hyperlink NavigateUri="https://archive.org/upload" RequestNavigate="ArchiveLink_RequestNavigate">
-                    archive.org/upload
+                Auto-uploaded maps go to
+                <Hyperlink NavigateUri="https://archive.org/details/kogama-maps-kgmexporter" RequestNavigate="ArchiveLink_RequestNavigate">
+                    archive.org/details/kogama-maps-kgmexporter
                 </Hyperlink>
-                so Kogama maps stay preserved.
             </TextBlock>
         </StackPanel>
     </Grid>
