@@ -79,12 +79,11 @@ internal sealed class WorldSession
     public void MarkActivity()
         => Interlocked.Exchange(ref _lastWorldDataTicks, DateTime.UtcNow.Ticks);
 
-    public async Task WaitForWorldQuietAsync(TimeSpan readyTimeout, TimeSpan quietFor, TimeSpan quietTimeout, CancellationToken ct = default)
+    public async Task WaitForWorldQuietAsync(TimeSpan quietFor, CancellationToken ct = default)
     {
-        await Ready.Task.WaitAsync(readyTimeout, ct);
+        await Ready.Task.WaitAsync(ct);
 
-        DateTime deadline = DateTime.UtcNow + quietTimeout;
-        while (DateTime.UtcNow < deadline)
+        while (true)
         {
             ct.ThrowIfCancellationRequested();
 
@@ -94,8 +93,7 @@ internal sealed class WorldSession
                 return;
 
             TimeSpan remainingQuiet = quietFor - idleFor;
-            TimeSpan remainingTimeout = deadline - DateTime.UtcNow;
-            TimeSpan delay = remainingQuiet < remainingTimeout ? remainingQuiet : remainingTimeout;
+            TimeSpan delay = remainingQuiet;
             if (delay > TimeSpan.FromMilliseconds(100))
                 delay = TimeSpan.FromMilliseconds(100);
             if (delay > TimeSpan.Zero)

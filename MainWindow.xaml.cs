@@ -842,8 +842,7 @@ public partial class MainWindow : Window
         SessionType? forceSession = avatarMode ? SessionType.Character : null;
 
         ct.ThrowIfCancellationRequested();
-        WorldSession? ws = await WorldOpener.OpenAsync(url, forceMode, forceSession, asGuest)
-            .WaitAsync(TimeSpan.FromSeconds(20), ct);
+        WorldSession? ws = await WorldOpener.OpenAsync(url, forceMode, forceSession, asGuest).WaitAsync(ct);
         if (ws == null)
             throw new InvalidOperationException("Invalid Kogama URL. Use /games/play/<id> or /build/<owner>/project/<id>.");
 
@@ -879,9 +878,7 @@ public partial class MainWindow : Window
         try
         {
             await ws.WaitForWorldQuietAsync(
-                readyTimeout: TimeSpan.FromSeconds(30),
                 quietFor: TimeSpan.FromSeconds(5),
-                quietTimeout: TimeSpan.FromSeconds(20),
                 ct: ct);
 
             var batches = ws.SnapshotBatches();
