@@ -9,6 +9,10 @@ internal sealed record AppSettings
     public bool? ArchiveAutoUpload { get; init; }
     // null defaults to true (skip duplicates on archive.org)
     public bool? ArchiveSkipDuplicates { get; init; }
+    // null/empty = use the built-in default S3 credentials baked into the binary.
+    // Non-empty = user override (entered in Advanced options).
+    public string? S3AccessKey { get; init; }
+    public string? S3SecretKey { get; init; }
 }
 
 internal static class LocalSettings

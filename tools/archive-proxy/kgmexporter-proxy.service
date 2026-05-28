@@ -6,11 +6,10 @@ After=network.target
 Type=simple
 User=archive
 WorkingDirectory=/opt/kgmexporter-proxy
-Environment=IA_ACCESS=REPLACE_WITH_ACCESS_KEY
-Environment=IA_SECRET=REPLACE_WITH_SECRET_KEY
-Environment=IA_ITEM=kogama-maps-kgmexporter
-Environment=PROXY_TOKEN=REPLACE_WITH_RANDOM_SHARED_SECRET
-ExecStart=/opt/kgmexporter-proxy/venv/bin/gunicorn -w 2 -b 0.0.0.0:9080 --timeout 900 proxy:app
+# Real IA_ACCESS / IA_SECRET / IA_ITEM / PROXY_TOKEN live in /etc/kgmexporter-proxy.env
+# (chmod 600, owner root) so they are never checked into the repo.
+EnvironmentFile=/etc/kgmexporter-proxy.env
+ExecStart=/opt/kgmexporter-proxy/venv/bin/gunicorn -w 4 --worker-class gthread --threads 2 -b 0.0.0.0:9080 --timeout 1800 proxy:app
 Restart=on-failure
 RestartSec=5
 

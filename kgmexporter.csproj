@@ -40,6 +40,10 @@
       <DependentUpon>FirstLaunchWindow.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="S3KeysWindow.xaml.cs">
+      <DependentUpon>S3KeysWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="KgmapExport.cs" />
     <Compile Include="KgmapToObj.cs" />
     <Compile Include="ArchiveUploader.cs" />
@@ -58,6 +62,10 @@
       <SubType>Designer</SubType>
     </Page>
     <Page Include="FirstLaunchWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="S3KeysWindow.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>

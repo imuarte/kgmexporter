@@ -202,6 +202,7 @@ public partial class MainWindow : Window
                 preflightCts.CancelAfter(TimeSpan.FromSeconds(8));
                 if (await ShouldSkipRemoteArchiveFileAsync(Path.GetFileName(outPath), enabled: true, preflightCts.Token))
                 {
+                    _archiveUploadQueue?.NoteAlreadyArchived(Path.GetFileName(outPath));
                     SetStatus($"{Path.GetFileName(outPath)} is already on archive.org, skipped.");
                     _activeCts?.Dispose();
                     _activeCts = null;
@@ -300,7 +301,7 @@ public partial class MainWindow : Window
             _botSlots.Clear();
             for (int i = 0; i < count; i++)
                 _botSlots.Add(new BotSlotViewModel(i));
-            BotSlotsPanel.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            BotSlotsScroll.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         });
     }
 
@@ -309,7 +310,7 @@ public partial class MainWindow : Window
         Dispatch(() =>
         {
             _botSlots.Clear();
-            BotSlotsPanel.Visibility = Visibility.Collapsed;
+            BotSlotsScroll.Visibility = Visibility.Collapsed;
         });
     }
 
@@ -466,6 +467,7 @@ public partial class MainWindow : Window
                 if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
                 {
                     Interlocked.Increment(ref skipped);
+                    _archiveUploadQueue?.NoteAlreadyArchived(fileName);
                     UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already on archive.org");
                     return;
                 }
@@ -740,6 +742,7 @@ public partial class MainWindow : Window
                 if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
                 {
                     Interlocked.Increment(ref skipped);
+                    _archiveUploadQueue?.NoteAlreadyArchived(fileName);
                     UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already on archive.org");
                     return;
                 }
@@ -901,6 +904,7 @@ public partial class MainWindow : Window
                 if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
                 {
                     Interlocked.Increment(ref skipped);
+                    _archiveUploadQueue?.NoteAlreadyArchived(fileName);
                     UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already on archive.org");
                     return;
                 }
@@ -1062,6 +1066,7 @@ public partial class MainWindow : Window
                 if (await ShouldSkipRemoteArchiveFileAsync(fileName, skipArchiveExisting, token))
                 {
                     Interlocked.Increment(ref skipped);
+                    _archiveUploadQueue?.NoteAlreadyArchived(fileName);
                     UpdateBotSlot(slot, $"{game.Id} '{Truncate(game.Name)}' - already on archive.org");
                     return;
                 }
@@ -1129,12 +1134,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private const int MaxBotCount = 32;
-
     private int GetBotCount()
     {
         if (int.TryParse(BotCountBox.Text?.Trim(), out int n) && n > 0)
-            return Math.Min(n, MaxBotCount);
+            return n;
         return 1;
     }
 
@@ -1443,6 +1446,131 @@ public partial class MainWindow : Window
         bool enabled = ArchiveDedupBox.IsChecked == true;
         var settings = LocalSettings.Load() with { ArchiveSkipDuplicates = enabled };
         LocalSettings.Save(settings);
+    }
+
+    private void S3KeysBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new S3KeysWindow { Owner = this };
+        dlg.ShowDialog();
+    }
+
+    private void UploadFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_archiveUploadQueue == null)
+        {
+            SetStatus("Archive upload queue is not initialized.", error: true);
+            return;
+        }
+
+        var dlg = new OpenFolderDialog
+        {
+            Title = "Pick a folder to scan for .kgmap files",
+            InitialDirectory = GetDefaultSaveDirectory(),
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        string folder = dlg.FolderName;
+        SetStatus($"Scanning {folder} for .kgmap files...");
+        _ = Task.Run(() => ScanAndQueueFolder(folder, null));
+    }
+
+    private void UploadZipBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_archiveUploadQueue == null)
+        {
+            SetStatus("Archive upload queue is not initialized.", error: true);
+            return;
+        }
+
+        var dlg = new OpenFileDialog
+        {
+            Title = "Pick a .zip with .kgmap files",
+            Filter = "Zip archive (*.zip)|*.zip|All files (*.*)|*.*",
+            DefaultExt = ".zip",
+            InitialDirectory = GetDefaultSaveDirectory(),
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        string zipPath = dlg.FileName;
+        SetStatus($"Extracting {zipPath}...");
+        _ = Task.Run(() => ScanAndQueueZip(zipPath));
+    }
+
+    private void ScanAndQueueFolder(string folder, string? originLabel)
+    {
+        string label = originLabel ?? folder;
+        int queued = 0, invalid = 0;
+        try
+        {
+            var files = Directory.EnumerateFiles(folder, "*.kgmap", SearchOption.AllDirectories);
+            foreach (string filePath in files)
+            {
+                if (!LooksLikeKgmap(filePath))
+                {
+                    invalid++;
+                    continue;
+                }
+                try
+                {
+                    _archiveUploadQueue!.Enqueue(filePath, metadata: null, skipDuplicates: true);
+                    queued++;
+                }
+                catch
+                {
+                    invalid++;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Dispatch(() => SetStatus($"Folder scan failed: {ex.Message}", error: true));
+            return;
+        }
+
+        Dispatch(() =>
+        {
+            string summary = $"Queued {queued} .kgmap file{(queued == 1 ? "" : "s")} from {label}";
+            if (invalid > 0) summary += $" ({invalid} skipped as not valid .kgmap)";
+            SetStatus(summary + ".");
+        });
+    }
+
+    private void ScanAndQueueZip(string zipPath)
+    {
+        // Extract the zip to a temp folder and reuse the folder-scan path. The
+        // extracted files are left in place; archive.org has its own copy after
+        // upload, so we don't bother cleaning up.
+        string tempRoot = Path.Combine(Path.GetTempPath(), "kgmexporter-zip-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(tempRoot);
+            System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, tempRoot);
+        }
+        catch (Exception ex)
+        {
+            Dispatch(() => SetStatus($"Zip extract failed: {ex.Message}", error: true));
+            return;
+        }
+
+        ScanAndQueueFolder(tempRoot, Path.GetFileName(zipPath));
+    }
+
+    // Quick sanity check: .kgmap files are gzip-compressed, so the first two
+    // bytes are the gzip magic (0x1F 0x8B). This catches mis-extensioned files
+    // without parsing the full payload.
+    private static bool LooksLikeKgmap(string filePath)
+    {
+        try
+        {
+            using var stream = File.OpenRead(filePath);
+            int b1 = stream.ReadByte();
+            int b2 = stream.ReadByte();
+            return b1 == 0x1F && b2 == 0x8B;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void LoadArchiveSettingsIntoUi()

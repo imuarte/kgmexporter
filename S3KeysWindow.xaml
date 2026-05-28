@@ -1,0 +1,60 @@
+<Window x:Class="KgmExporter.S3KeysWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="archive.org S3 keys"
+        Width="440"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="Override the built-in archive.org S3 credentials."
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,4"/>
+        <TextBlock Grid.Row="1"
+                   FontSize="11"
+                   Foreground="DarkGray"
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,8">
+            Leave empty to use the built-in keys baked into the app.
+            <LineBreak/>
+            <Hyperlink NavigateUri="https://archive.org/account/s3.php"
+                       RequestNavigate="Link_RequestNavigate">
+                get your own keys from archive.org
+            </Hyperlink>
+        </TextBlock>
+        <TextBlock Grid.Row="2"
+                   FontSize="11"
+                   FontWeight="Bold"
+                   Foreground="Red"
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,12">
+            If you set your own keys, DM your archive.org email to Discord
+            <Run FontWeight="Bold">nightus3134</Run>
+            so I can add you as a collaborator (otherwise uploads will fail with 403).
+        </TextBlock>
+
+        <TextBlock Grid.Row="3" Text="Access key" Margin="0,0,0,2"/>
+        <TextBox   Grid.Row="4" x:Name="AccessKeyBox" Margin="0,0,0,8"/>
+
+        <TextBlock Grid.Row="5" Text="Secret key" Margin="0,0,0,2"/>
+        <TextBox   Grid.Row="6" x:Name="SecretKeyBox" Margin="0,0,0,12"/>
+
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="ClearBtn"  Content="Use defaults" Width="100" Height="26" Margin="0,0,6,0" Click="ClearBtn_Click"/>
+            <Button x:Name="SaveBtn"   Content="Save"         Width="80"  Height="26" IsDefault="True" Click="SaveBtn_Click"/>
+            <Button x:Name="CancelBtn" Content="Cancel"       Width="80"  Height="26" Margin="6,0,0,0" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

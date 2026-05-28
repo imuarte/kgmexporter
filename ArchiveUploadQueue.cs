@@ -16,11 +16,12 @@ internal sealed class ArchiveUploadQueue : IDisposable
     private int _running;
     private int _uploaded;
     private int _alreadyExists;
+    private int _pending;
     private int _failed;
 
     public int PendingCount => Volatile.Read(ref _queued) + Volatile.Read(ref _running);
 
-    public ArchiveUploadQueue(Action<string, bool> reportStatus, int workerCount = 2)
+    public ArchiveUploadQueue(Action<string, bool> reportStatus, int workerCount = 32)
     {
         _reportStatus = reportStatus;
         _workers = Enumerable.Range(0, Math.Max(1, workerCount))
@@ -44,6 +45,16 @@ internal sealed class ArchiveUploadQueue : IDisposable
             Interlocked.Decrement(ref _queued);
             throw;
         }
+    }
+
+    // Called by upstream code when it skipped a download because the file is
+    // already on archive.org. The queue tracks this so the end-of-run summary
+    // can show "already archivized: N".
+    public void NoteAlreadyArchived(string fileName)
+    {
+        Interlocked.Increment(ref _alreadyExists);
+        Report($"{fileName} already on archive.org.");
+        ReportIdleIfDone();
     }
 
     private async Task WorkerLoopAsync()
@@ -77,13 +88,16 @@ internal sealed class ArchiveUploadQueue : IDisposable
                 return;
             }
 
+            // Upstream has already done the pre-download HEAD check, so tell
+            // the uploader to skip its own (no double round-trip).
             var result = await ArchiveUploader.UploadKgmapAsync(
                 job.FilePath,
                 options,
                 job.Metadata,
                 status => Report($"{fileName}: {status}"),
                 _cts.Token,
-                job.SkipDuplicates);
+                job.SkipDuplicates,
+                skipRemoteCheck: true);
 
             switch (result.Status)
             {
@@ -94,6 +108,10 @@ internal sealed class ArchiveUploadQueue : IDisposable
                 case ArchiveUploadStatus.AlreadyExists:
                     Interlocked.Increment(ref _alreadyExists);
                     Report($"{fileName} is already on archive.org.");
+                    break;
+                case ArchiveUploadStatus.Pending:
+                    Interlocked.Increment(ref _pending);
+                    Report($"Uploaded {fileName}; archive.org is still indexing it.");
                     break;
                 case ArchiveUploadStatus.Failed:
                     Interlocked.Increment(ref _failed);
@@ -124,12 +142,14 @@ internal sealed class ArchiveUploadQueue : IDisposable
         int failed = Volatile.Read(ref _failed);
         int uploaded = Volatile.Read(ref _uploaded);
         int alreadyExists = Volatile.Read(ref _alreadyExists);
-        int finished = uploaded + alreadyExists + failed;
+        int pending = Volatile.Read(ref _pending);
+        int finished = uploaded + alreadyExists + pending + failed;
         if (finished <= 0)
             return;
 
         string text = $"Archive uploads finished: {uploaded} uploaded";
-        if (alreadyExists > 0) text += $", {alreadyExists} skipped";
+        if (pending > 0) text += $", {pending} pending on archive.org";
+        if (alreadyExists > 0) text += $", already archivized: {alreadyExists}";
         if (failed > 0) text += $", {failed} failed";
         Report(text + ".", error: failed > 0);
     }
@@ -138,8 +158,15 @@ internal sealed class ArchiveUploadQueue : IDisposable
     {
         int running = Volatile.Read(ref _running);
         int queued = Volatile.Read(ref _queued);
-        if (running > 0 || queued > 0)
-            text += $" ({running} uploading, {queued} queued)";
+        int alreadyExists = Volatile.Read(ref _alreadyExists);
+
+        string status = "";
+        if (running > 0) status += (status.Length == 0 ? "" : ", ") + $"{running} uploading";
+        if (queued > 0) status += (status.Length == 0 ? "" : ", ") + $"{queued} queued";
+        if (alreadyExists > 0) status += (status.Length == 0 ? "" : ", ") + $"already archivized: {alreadyExists}";
+
+        if (status.Length > 0)
+            text += " (" + status + ")";
 
         _reportStatus(text, error);
     }

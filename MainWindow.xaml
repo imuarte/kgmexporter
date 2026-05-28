@@ -92,6 +92,15 @@
                                 <TextBox x:Name="ConnectionDelayBox" Text="5000" Width="60" Padding="4,2" TextAlignment="Center"/>
                                 <TextBlock Text="(minimum gap between new bulk map connections)" Foreground="DarkGray" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
+                                <Button x:Name="S3KeysBtn" Content="Set archive.org S3 keys..." Padding="8,3" Click="S3KeysBtn_Click"/>
+                                <TextBlock Text="(override built-in keys if ours get banned)" Foreground="DarkGray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
+                                <Button x:Name="UploadFolderBtn" Content="Upload folder..." Padding="8,3" Margin="0,0,6,0" Click="UploadFolderBtn_Click"/>
+                                <Button x:Name="UploadZipBtn"    Content="Upload .zip..."   Padding="8,3" Click="UploadZipBtn_Click"/>
+                                <TextBlock Text="(local .kgmap files -&gt; archive.org)" Foreground="DarkGray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
                         </StackPanel>
                     </Expander>
                     <DockPanel Grid.Row="3" Margin="0,8,0,0">
@@ -126,13 +135,20 @@
 
         <StackPanel Grid.Row="2" Margin="0,6,0,0">
             <TextBlock x:Name="StatusLabel" Foreground="Gray" FontSize="11"/>
-            <ItemsControl x:Name="BotSlotsPanel" Margin="0,2,0,0" Visibility="Collapsed">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <TextBlock Text="{Binding Text}" FontFamily="Consolas" FontSize="11" Foreground="#444"/>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
+            <ScrollViewer x:Name="BotSlotsScroll"
+                          Margin="0,2,0,0"
+                          MaxHeight="180"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Visibility="Collapsed">
+                <ItemsControl x:Name="BotSlotsPanel">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Text}" FontFamily="Consolas" FontSize="11" Foreground="#444"/>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
             <TextBlock x:Name="ArchiveStatusLabel" Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
             <TextBlock FontSize="11" Foreground="Gray" Margin="0,4,0,0" TextWrapping="Wrap">
                 Auto-uploaded maps go to
