@@ -1464,14 +1464,21 @@ public partial class MainWindow : Window
 
         var dlg = new OpenFolderDialog
         {
-            Title = "Pick a folder to scan for .kgmap files",
+            Title = "Pick one or more folders to scan for .kgmap files",
             InitialDirectory = GetDefaultSaveDirectory(),
+            Multiselect = true,
         };
         if (dlg.ShowDialog(this) != true) return;
 
-        string folder = dlg.FolderName;
-        SetStatus($"Scanning {folder} for .kgmap files...");
-        _ = Task.Run(() => ScanAndQueueFolder(folder, null));
+        var folders = dlg.FolderNames.ToArray();
+        SetStatus(folders.Length == 1
+            ? $"Scanning {folders[0]} for .kgmap files..."
+            : $"Scanning {folders.Length} folders for .kgmap files...");
+        _ = Task.Run(() =>
+        {
+            foreach (string folder in folders)
+                ScanAndQueueFolder(folder, null);
+        });
     }
 
     private void UploadZipBtn_Click(object sender, RoutedEventArgs e)
