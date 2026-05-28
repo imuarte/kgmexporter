@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="kgmexporter"
-        Width="500" Height="330"
+        Width="500" Height="380"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanResize"
         MouseLeftButtonDown="Window_MouseLeftButtonDown">
@@ -13,102 +13,75 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <DockPanel Grid.Row="0" Margin="0,0,0,6">
-            <Button DockPanel.Dock="Right" x:Name="AccountBtn" Content="Sign in" Padding="8,2" Click="AccountBtn_Click"/>
-            <TextBlock VerticalAlignment="Center" Text="kgmexporter" Foreground="Gray"/>
-        </DockPanel>
+        <TextBlock Grid.Row="0" Text="kgmexporter" Foreground="Gray" Margin="0,0,0,6"/>
 
         <TabControl Grid.Row="1" x:Name="Tabs">
-            <TabItem Header="Save">
+            <TabItem Header="Upload">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <DockPanel Grid.Row="0">
-                        <Border DockPanel.Dock="Right"
-                                Width="20" Height="20"
-                                Margin="6,0,0,0"
-                                CornerRadius="10"
-                                BorderBrush="#888" BorderThickness="1"
-                                Background="#EEEEEE"
-                                VerticalAlignment="Center"
-                                Cursor="Help"
-                                ToolTipService.InitialShowDelay="200"
-                                ToolTipService.ShowDuration="20000">
-                            <Border.ToolTip>
-                                <ToolTip>
-                                    <StackPanel>
-                                        <TextBlock FontWeight="Bold" Text="Supported URLs"/>
-                                        <TextBlock Text="• Game: /games/play/&lt;id&gt;"/>
-                                        <TextBlock Text="• Project: /build/&lt;owner&gt;/project/&lt;id&gt;"/>
-                                        <TextBlock Text="• Profile: /profile/&lt;id&gt; (saves every game)"/>
-                                        <TextBlock Text="• Profile friends: /profile/&lt;id&gt;/friends/ (saves friends' games)"/>
-                                        <TextBlock Text="• My games: /build/ (saves all your own games, needs login)"/>
-                                        <TextBlock Text="• Public games: /games/ (saves popular public games)"/>
-                                        <TextBlock Margin="0,4,0,0" Text="Domains: www.kogama.com, kogama.com.br, friends.kogama.com"/>
-                                    </StackPanel>
-                                </ToolTip>
-                            </Border.ToolTip>
-                            <TextBlock Text="i"
-                                       FontFamily="Segoe UI"
-                                       FontStyle="Italic"
-                                       FontWeight="Bold"
-                                       FontSize="13"
-                                       Foreground="#444"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"/>
-                        </Border>
-                        <Grid>
-                            <TextBox x:Name="UrlBox" Padding="4" TextChanged="UrlBox_TextChanged"/>
-                            <TextBlock x:Name="UrlPlaceholder"
-                                       Text="paste a kogama game or profile url"
-                                       Foreground="DarkGray"
-                                       Margin="6,0,0,0"
-                                       VerticalAlignment="Center"
-                                       IsHitTestVisible="False"/>
-                        </Grid>
-                    </DockPanel>
-                    <CheckBox Grid.Row="1" x:Name="ArchiveAutoUploadBox"
-                              Content="Upload saved .kgmap files to archive.org"
-                              Margin="0,8,0,0"
-                              Checked="ArchiveAutoUploadBox_Changed"
-                              Unchecked="ArchiveAutoUploadBox_Changed"/>
-                    <Expander Grid.Row="2" x:Name="AdvancedExpander" Header="Advanced options" Margin="0,8,0,0" Foreground="Gray">
+
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="UploadBtn" Content="Upload..." Padding="10,4" Click="UploadBtn_Click">
+                            <Button.ContextMenu>
+                                <ContextMenu x:Name="UploadMenu" Placement="Bottom">
+                                    <MenuItem Header="Files... (.kgmap, .zip, .rar)" Click="UploadFiles_Click"/>
+                                    <MenuItem Header="Folder(s)..." Click="UploadFolders_Click"/>
+                                </ContextMenu>
+                            </Button.ContextMenu>
+                        </Button>
+                        <Button x:Name="CancelUploadBtn" Content="Cancel" Padding="10,4" Margin="6,0,0,0" Click="CancelUploadBtn_Click"/>
+                        <TextBlock Text="(.kgmap / .zip / .rar / folders -&gt; archive.org)"
+                                   Foreground="DarkGray" FontSize="11"
+                                   Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <CheckBox Grid.Row="1" x:Name="ArchiveDedupBox"
+                              Content="Skip maps already on archive.org"
+                              IsChecked="True"
+                              Margin="0,10,0,0"
+                              Checked="ArchiveDedupBox_Changed"
+                              Unchecked="ArchiveDedupBox_Changed"/>
+                    <CheckBox Grid.Row="1" x:Name="UploadArchivesAsIsBox"
+                              Content="Upload .zip / .rar as-is (faster, no per-map browsing)"
+                              IsChecked="False"
+                              Margin="0,32,0,0"
+                              Checked="UploadArchivesAsIsBox_Changed"
+                              Unchecked="UploadArchivesAsIsBox_Changed"/>
+
+                    <Expander Grid.Row="2" x:Name="AdvancedExpander" Header="Advanced options" Margin="0,10,0,0" Foreground="Gray">
                         <StackPanel Margin="4,6,0,0">
-                            <CheckBox x:Name="GuestModeBox" IsChecked="False" IsEnabled="False" Visibility="Collapsed"/>
-                            <CheckBox x:Name="SkipExistingBox" Content="Skip games already in folder" IsChecked="True"/>
-                            <CheckBox x:Name="ArchiveDedupBox" Content="Skip maps already on archive.org" IsChecked="True" Margin="0,6,0,0" Checked="ArchiveDedupBox_Changed" Unchecked="ArchiveDedupBox_Changed"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
-                                <TextBlock Text="Bots:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                <TextBox x:Name="BotCountBox" Text="1" Width="50" Padding="4,2" TextAlignment="Center"/>
-                                <TextBlock Text="(parallel sessions for profile / my-games / public-games saves)" Foreground="DarkGray" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="Upload delay (ms):" VerticalAlignment="Center" Margin="0,0,6,0" Width="140"/>
+                                <TextBox x:Name="UploadDelayBox" Text="0" Width="60" Padding="4,2" TextAlignment="Center" LostFocus="UploadTuning_LostFocus"/>
+                                <TextBlock Text="raise if blocked" Foreground="DarkGray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
-                                <TextBlock Text="Connection delay (ms):" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                <TextBox x:Name="ConnectionDelayBox" Text="5000" Width="60" Padding="4,2" TextAlignment="Center"/>
-                                <TextBlock Text="(minimum gap between new bulk map connections)" Foreground="DarkGray" FontSize="11" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="Retry delay (ms):" VerticalAlignment="Center" Margin="0,0,6,0" Width="140"/>
+                                <TextBox x:Name="RetryDelayBox" Text="1000" Width="60" Padding="4,2" TextAlignment="Center" LostFocus="UploadTuning_LostFocus"/>
+                                <TextBlock Text="wait before retry" Foreground="DarkGray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0" VerticalAlignment="Center">
                                 <Button x:Name="S3KeysBtn" Content="Set archive.org S3 keys..." Padding="8,3" Click="S3KeysBtn_Click"/>
-                                <TextBlock Text="(override built-in keys if ours get banned)" Foreground="DarkGray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
-                                <Button x:Name="UploadFolderBtn" Content="Upload folder..." Padding="8,3" Margin="0,0,6,0" Click="UploadFolderBtn_Click"/>
-                                <Button x:Name="UploadZipBtn"    Content="Upload .zip..."   Padding="8,3" Click="UploadZipBtn_Click"/>
-                                <TextBlock Text="(local .kgmap files -&gt; archive.org)" Foreground="DarkGray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                <TextBlock Text="only if ours get banned" Foreground="DarkGray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
                             </StackPanel>
                         </StackPanel>
                     </Expander>
-                    <DockPanel Grid.Row="3" Margin="0,8,0,0">
-                        <Button DockPanel.Dock="Right" x:Name="SaveAvatarBtn" Content="Save avatar" Width="110" Height="28" Margin="6,0,0,0" Click="SaveAvatarBtn_Click"/>
-                        <Button x:Name="SaveBtn" Content="Save .kgmap" Height="28" Click="SaveBtn_Click"/>
-                    </DockPanel>
+
+                    <TextBlock Grid.Row="3" FontSize="11" Foreground="Gray"
+                               Margin="0,10,0,0" TextWrapping="Wrap" VerticalAlignment="Bottom">
+                        Uploaded maps go to
+                        <Hyperlink NavigateUri="https://archive.org/details/kogama-maps-kgmexporter" RequestNavigate="ArchiveLink_RequestNavigate">
+                            archive.org/details/kogama-maps-kgmexporter
+                        </Hyperlink>
+                    </TextBlock>
                 </Grid>
             </TabItem>
+
             <TabItem Header="Convert">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
@@ -135,27 +108,7 @@
 
         <StackPanel Grid.Row="2" Margin="0,6,0,0">
             <TextBlock x:Name="StatusLabel" Foreground="Gray" FontSize="11"/>
-            <ScrollViewer x:Name="BotSlotsScroll"
-                          Margin="0,2,0,0"
-                          MaxHeight="180"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled"
-                          Visibility="Collapsed">
-                <ItemsControl x:Name="BotSlotsPanel">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding Text}" FontFamily="Consolas" FontSize="11" Foreground="#444"/>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </ScrollViewer>
-            <TextBlock x:Name="ArchiveStatusLabel" Foreground="Gray" FontSize="11" Margin="0,2,0,0"/>
-            <TextBlock FontSize="11" Foreground="Gray" Margin="0,4,0,0" TextWrapping="Wrap">
-                Auto-uploaded maps go to
-                <Hyperlink NavigateUri="https://archive.org/details/kogama-maps-kgmexporter" RequestNavigate="ArchiveLink_RequestNavigate">
-                    archive.org/details/kogama-maps-kgmexporter
-                </Hyperlink>
-            </TextBlock>
+            <TextBlock x:Name="ArchiveStatusLabel" Foreground="#222" FontSize="13" FontWeight="SemiBold" FontFamily="Consolas" Margin="0,4,0,0"/>
         </StackPanel>
     </Grid>
 </Window>

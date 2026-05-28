@@ -8,9 +8,10 @@ internal sealed class ArchiveUploadQueue : IDisposable
     private sealed record Job(string FilePath, KgmapMetadata? Metadata, bool SkipDuplicates);
 
     private readonly BlockingCollection<Job> _jobs = new();
-    private readonly CancellationTokenSource _cts = new();
-    private readonly Task[] _workers;
+    private CancellationTokenSource _cts = new();
+    private Task[] _workers;
     private readonly Action<string, bool> _reportStatus;
+    private readonly int _workerCount;
 
     private int _queued;
     private int _running;
@@ -21,12 +22,39 @@ internal sealed class ArchiveUploadQueue : IDisposable
 
     public int PendingCount => Volatile.Read(ref _queued) + Volatile.Read(ref _running);
 
-    public ArchiveUploadQueue(Action<string, bool> reportStatus, int workerCount = 32)
+    public ArchiveUploadQueue(Action<string, bool> reportStatus, int workerCount = 128)
     {
         _reportStatus = reportStatus;
-        _workers = Enumerable.Range(0, Math.Max(1, workerCount))
+        _workerCount = Math.Max(1, workerCount);
+        _workers = Enumerable.Range(0, _workerCount)
             .Select(_ => Task.Run(WorkerLoopAsync))
             .ToArray();
+    }
+
+    public void CancelAndReset()
+    {
+        int drained = Volatile.Read(ref _queued);
+        while (_jobs.TryTake(out _)) { }
+        Interlocked.Exchange(ref _queued, 0);
+
+        _cts.Cancel();
+        try { Task.WaitAll(_workers, TimeSpan.FromSeconds(5)); } catch { }
+        _cts.Dispose();
+        _cts = new CancellationTokenSource();
+
+        Interlocked.Exchange(ref _running, 0);
+        Interlocked.Exchange(ref _uploaded, 0);
+        Interlocked.Exchange(ref _alreadyExists, 0);
+        Interlocked.Exchange(ref _pending, 0);
+        Interlocked.Exchange(ref _failed, 0);
+
+        _workers = Enumerable.Range(0, _workerCount)
+            .Select(_ => Task.Run(WorkerLoopAsync))
+            .ToArray();
+
+        _reportStatus(drained > 0
+            ? $"Cancelled uploads ({drained} dropped from queue)."
+            : "Cancelled uploads.", false);
     }
 
     public void Enqueue(string filePath, KgmapMetadata? metadata, bool skipDuplicates)
@@ -62,7 +90,16 @@ internal sealed class ArchiveUploadQueue : IDisposable
         try
         {
             foreach (var job in _jobs.GetConsumingEnumerable(_cts.Token))
+            {
                 await ProcessJobAsync(job);
+
+                int delayMs = UploadTuning.Delay(LocalSettings.Load());
+                if (delayMs > 0)
+                {
+                    try { await Task.Delay(delayMs, _cts.Token); }
+                    catch (OperationCanceledException) { break; }
+                }
+            }
         }
         catch (OperationCanceledException)
         {
@@ -88,8 +125,8 @@ internal sealed class ArchiveUploadQueue : IDisposable
                 return;
             }
 
-            // Upstream has already done the pre-download HEAD check, so tell
-            // the uploader to skip its own (no double round-trip).
+            // Worker does the HEAD check inline so scan-time isn't gated on
+            // archive.org. Duplicates skip the PUT inside UploadKgmapAsync.
             var result = await ArchiveUploader.UploadKgmapAsync(
                 job.FilePath,
                 options,
@@ -97,7 +134,7 @@ internal sealed class ArchiveUploadQueue : IDisposable
                 status => Report($"{fileName}: {status}"),
                 _cts.Token,
                 job.SkipDuplicates,
-                skipRemoteCheck: true);
+                skipRemoteCheck: false);
 
             switch (result.Status)
             {
@@ -134,41 +171,29 @@ internal sealed class ArchiveUploadQueue : IDisposable
         }
     }
 
-    private void ReportIdleIfDone()
-    {
-        if (Volatile.Read(ref _queued) != 0 || Volatile.Read(ref _running) != 0)
-            return;
+    private void ReportIdleIfDone() => Report("", error: false);
 
-        int failed = Volatile.Read(ref _failed);
-        int uploaded = Volatile.Read(ref _uploaded);
-        int alreadyExists = Volatile.Read(ref _alreadyExists);
-        int pending = Volatile.Read(ref _pending);
-        int finished = uploaded + alreadyExists + pending + failed;
-        if (finished <= 0)
-            return;
-
-        string text = $"Archive uploads finished: {uploaded} uploaded";
-        if (pending > 0) text += $", {pending} pending on archive.org";
-        if (alreadyExists > 0) text += $", already archivized: {alreadyExists}";
-        if (failed > 0) text += $", {failed} failed";
-        Report(text + ".", error: failed > 0);
-    }
-
-    private void Report(string text, bool error = false)
+    private void Report(string _text, bool error = false)
     {
         int running = Volatile.Read(ref _running);
         int queued = Volatile.Read(ref _queued);
-        int alreadyExists = Volatile.Read(ref _alreadyExists);
+        int uploaded = Volatile.Read(ref _uploaded);
+        int failed = Volatile.Read(ref _failed);
+        int already = Volatile.Read(ref _alreadyExists);
+        int pending = Volatile.Read(ref _pending);
 
-        string status = "";
-        if (running > 0) status += (status.Length == 0 ? "" : ", ") + $"{running} uploading";
-        if (queued > 0) status += (status.Length == 0 ? "" : ", ") + $"{queued} queued";
-        if (alreadyExists > 0) status += (status.Length == 0 ? "" : ", ") + $"already archivized: {alreadyExists}";
+        if (running == 0 && queued == 0 && uploaded == 0 && failed == 0 && already == 0 && pending == 0)
+        {
+            _reportStatus("", false);
+            return;
+        }
 
-        if (status.Length > 0)
-            text += " (" + status + ")";
+        string status = $"Done {uploaded}   Running {running}   Queued {queued}";
+        if (failed > 0) status += $"   Failed {failed}";
+        if (already > 0) status += $"   On archive {already}";
+        if (pending > 0) status += $"   Pending {pending}";
 
-        _reportStatus(text, error);
+        _reportStatus(status, error || failed > 0);
     }
 
     public void Dispose()

@@ -13,6 +13,23 @@ internal sealed record AppSettings
     // Non-empty = user override (entered in Advanced options).
     public string? S3AccessKey { get; init; }
     public string? S3SecretKey { get; init; }
+
+    // Per-worker delay between successive uploads, to avoid getting rate-limited.
+    public int? UploadDelayMs { get; init; }
+    // Base wait between retries; attempt N waits N * UploadRetryDelayMs.
+    public int? UploadRetryDelayMs { get; init; }
+    // When true, .zip / .rar are uploaded to archive.org as-is instead of being
+    // extracted and uploaded per .kgmap inside.
+    public bool? UploadArchivesAsIs { get; init; }
+}
+
+internal static class UploadTuning
+{
+    public const int DefaultDelayMs = 0;
+    public const int DefaultRetryDelayMs = 1000;
+
+    public static int Delay(AppSettings s) => Math.Clamp(s.UploadDelayMs ?? DefaultDelayMs, 0, 60_000);
+    public static int RetryDelay(AppSettings s) => Math.Clamp(s.UploadRetryDelayMs ?? DefaultRetryDelayMs, 0, 60_000);
 }
 
 internal static class LocalSettings
