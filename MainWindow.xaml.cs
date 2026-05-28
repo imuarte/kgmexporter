@@ -1506,27 +1506,53 @@ public partial class MainWindow : Window
     private void ScanAndQueueFolder(string folder, string? originLabel)
     {
         string label = originLabel ?? folder;
-        int queued = 0, invalid = 0;
+        int queued = 0, invalid = 0, alreadyArchived = 0;
         try
         {
-            var files = Directory.EnumerateFiles(folder, "*.kgmap", SearchOption.AllDirectories);
-            foreach (string filePath in files)
-            {
-                if (!LooksLikeKgmap(filePath))
+            var files = Directory.EnumerateFiles(folder, "*.kgmap", SearchOption.AllDirectories).ToList();
+
+            // HEAD each file against archive.org in parallel before enqueuing.
+            // Duplicates never enter the upload queue.
+            Parallel.ForEach(
+                files,
+                new ParallelOptions { MaxDegreeOfParallelism = 32 },
+                filePath =>
                 {
-                    invalid++;
-                    continue;
-                }
-                try
-                {
-                    _archiveUploadQueue!.Enqueue(filePath, metadata: null, skipDuplicates: true);
-                    queued++;
-                }
-                catch
-                {
-                    invalid++;
-                }
-            }
+                    if (!LooksLikeKgmap(filePath))
+                    {
+                        Interlocked.Increment(ref invalid);
+                        return;
+                    }
+
+                    string fileName = Path.GetFileName(filePath);
+                    bool exists;
+                    try
+                    {
+                        exists = ArchiveUploader.RemoteFileExistsAsync(fileName, CancellationToken.None)
+                                                .GetAwaiter().GetResult();
+                    }
+                    catch
+                    {
+                        exists = false;
+                    }
+
+                    if (exists)
+                    {
+                        Interlocked.Increment(ref alreadyArchived);
+                        _archiveUploadQueue!.NoteAlreadyArchived(fileName);
+                        return;
+                    }
+
+                    try
+                    {
+                        _archiveUploadQueue!.Enqueue(filePath, metadata: null, skipDuplicates: true);
+                        Interlocked.Increment(ref queued);
+                    }
+                    catch
+                    {
+                        Interlocked.Increment(ref invalid);
+                    }
+                });
         }
         catch (Exception ex)
         {
@@ -1536,8 +1562,9 @@ public partial class MainWindow : Window
 
         Dispatch(() =>
         {
-            string summary = $"Queued {queued} .kgmap file{(queued == 1 ? "" : "s")} from {label}";
-            if (invalid > 0) summary += $" ({invalid} skipped as not valid .kgmap)";
+            string summary = $"Queued {queued} new .kgmap file{(queued == 1 ? "" : "s")} from {label}";
+            if (alreadyArchived > 0) summary += $", {alreadyArchived} already on archive.org";
+            if (invalid > 0)        summary += $", {invalid} skipped as not valid .kgmap";
             SetStatus(summary + ".");
         });
     }
