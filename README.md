@@ -1,9 +1,10 @@
 # kgmexporter
 
-Save Kogama maps to your computer and open them in Blender.
+KoGaMa shut down, so kgmexporter is now about preserving the maps that were saved before it went offline.
 
-Paste a map URL, click save - you get a `.kgmap` file with the whole world in it. Then use the Convert tab to turn it into a `.glb` you can drag into Blender.
+It does two things:
 
-Sign in if you want to grab avatar-editor maps.
+- **Upload** - send your `.kgmap` files (or `.zip` / `.rar` / folders of them) to [archive.org](https://archive.org) so they don't get lost. Old legacy-format maps are skipped automatically.
+- **Convert** - turn a `.kgmap` into a `.obj` (with `.mtl` + texture atlas) you can drag straight into Blender.
 
-Please share what you save on [archive.org](https://archive.org/upload) so Kogama maps don't get lost.
+Pick a tab, choose your files, and go.
