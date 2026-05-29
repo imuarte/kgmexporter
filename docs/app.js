@@ -8,6 +8,7 @@
     const metaEl = $('meta');
     const searchEl = $('search');
     const regionEl = $('region');
+    const typeEl = $('type');
     const sortEl = $('sort');
     const tabMapsEl = $('tabMaps');
     const tabAuthorsEl = $('tabAuthors');
@@ -19,20 +20,45 @@
     let view = 'maps';      // 'maps' | 'authors'
     let ownerFilter = null; // selected author key, or null
 
-    fetch('index.json', { cache: 'no-cache' })
+    // Two data sources are merged:
+    //   index.json - .kgmap maps preserved on archive.org (download from there)
+    //   kgm.json   - .kgm games from the ReGaMa Discord archive (direct CDN link)
+    const loadIndex = fetch('index.json', { cache: 'no-cache' })
         .then((r) => r.ok ? r.json() : Promise.reject(r.status))
-        .then((data) => {
-            allMaps = data.maps || [];
-            metaEl.textContent =
-                `${data.count} maps - index regenerated ${data.generatedAt ? new Date(data.generatedAt).toLocaleString() : 'unknown'}`;
+        .catch((err) => { console.warn('index.json failed:', err); return null; });
+
+    const loadKgm = fetch('kgm.json', { cache: 'no-cache' })
+        .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+        .catch((err) => { console.warn('kgm.json failed:', err); return null; });
+
+    Promise.all([loadIndex, loadKgm])
+        .then(([index, kgm]) => {
+            if (!index && !kgm) {
+                statusEl.textContent = 'Failed to load index data.';
+                return;
+            }
+            const kgmapMaps = (index && index.maps || []).map((m) => ({ ...m, Type: m.Type || 'kgmap' }));
+            // Drop .kgm games that already exist as a .kgmap: the archive.org
+            // copy is permanent, the Discord .kgm link is temporary. One row
+            // per game id, no duplicates across the two sources.
+            const haveKgmap = new Set(kgmapMaps.map((m) => String(m.GameId)).filter((id) => id && id !== 'undefined'));
+            const kgmMaps = (kgm && kgm.maps || [])
+                .filter((m) => !haveKgmap.has(String(m.GameId)))
+                .map((m) => ({ ...m, Type: m.Type || 'kgm' }));
+            allMaps = kgmapMaps.concat(kgmMaps);
+
+            const parts = [];
+            if (kgmapMaps.length) parts.push(`${kgmapMaps.length} .kgmap`);
+            if (kgmMaps.length) parts.push(`${kgmMaps.length} .kgm`);
+            const when = index && index.generatedAt
+                ? new Date(index.generatedAt).toLocaleString()
+                : (kgm && kgm.generatedAt ? new Date(kgm.generatedAt).toLocaleString() : 'unknown');
+            metaEl.textContent = `${allMaps.length} files (${parts.join(' + ')}) - index regenerated ${when}`;
             statusEl.textContent = '';
             render();
-        })
-        .catch((err) => {
-            statusEl.textContent = 'Failed to load index.json (' + err + ').';
         });
 
-    [searchEl, regionEl, sortEl].forEach((el) => el.addEventListener('input', render));
+    [searchEl, regionEl, typeEl, sortEl].forEach((el) => el.addEventListener('input', render));
     tabMapsEl.addEventListener('click', () => setView('maps'));
     tabAuthorsEl.addEventListener('click', () => setView('authors'));
 
@@ -43,6 +69,7 @@
         tableEl.hidden = v !== 'maps';
         authorsEl.hidden = v !== 'authors';
         regionEl.hidden = v !== 'maps';
+        typeEl.hidden = v !== 'maps';
         sortEl.hidden = v !== 'maps';
         searchEl.placeholder = v === 'maps'
             ? 'Search by title, owner, or game id...'
@@ -121,11 +148,15 @@
     function renderMaps() {
         const q = searchEl.value.trim().toLowerCase();
         const region = regionEl.value;
+        const type = typeEl.value;
         const sort = sortEl.value;
 
         let rows = allMaps;
         if (ownerFilter) {
             rows = rows.filter((m) => ownerKey(m) === ownerFilter);
+        }
+        if (type) {
+            rows = rows.filter((m) => m.Type === type);
         }
         if (q) {
             rows = rows.filter((m) =>
@@ -141,7 +172,7 @@
         rows = rows.slice();
         switch (sort) {
             case 'date-asc':
-                rows.sort((a, b) => (a.Mtime || '').localeCompare(b.Mtime || ''));
+                rows.sort((a, b) => dateMs(a) - dateMs(b));
                 break;
             case 'title-asc':
                 rows.sort((a, b) => (a.GameTitle || a.Name || '').localeCompare(b.GameTitle || b.Name || ''));
@@ -151,7 +182,7 @@
                 break;
             case 'date-desc':
             default:
-                rows.sort((a, b) => (b.Mtime || '').localeCompare(a.Mtime || ''));
+                rows.sort((a, b) => dateMs(b) - dateMs(a));
                 break;
         }
 
@@ -197,8 +228,13 @@
         tr.appendChild(sizeTd);
         const dl = document.createElement('td');
         const a = document.createElement('a');
-        a.href = `${ITEM_URL}/${encodeURIComponent(m.Name)}`;
-        a.textContent = '.kgmap';
+        if (m.Type === 'kgm') {
+            a.href = m.Url || '#';
+            a.textContent = '.kgm';
+        } else {
+            a.href = `${ITEM_URL}/${encodeURIComponent(m.Name)}`;
+            a.textContent = '.kgmap';
+        }
         a.rel = 'noopener';
         dl.appendChild(a);
         tr.appendChild(dl);
@@ -209,6 +245,21 @@
         const el = document.createElement('td');
         el.textContent = text;
         return el;
+    }
+
+    function dateMs(m) {
+        // kgm entries carry only SavedAt (ISO); kgmap entries carry Mtime
+        // (unix seconds) and usually SavedAt too. Normalise to a number so
+        // both kinds sort together.
+        if (m.SavedAt) {
+            const t = Date.parse(m.SavedAt);
+            if (!isNaN(t)) return t;
+        }
+        if (m.Mtime) {
+            const n = parseInt(m.Mtime, 10);
+            if (!isNaN(n)) return n * 1000;
+        }
+        return 0;
     }
 
     function fmtDate(s) {

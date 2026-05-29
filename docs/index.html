@@ -4,12 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KoGaMa Map Archive - kgmexporter</title>
-    <link rel="stylesheet" href="style.css?v=2">
+    <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
     <header>
         <h1>KoGaMa Map Archive</h1>
-        <p class="sub">Preserved KoGaMa maps on <a href="https://archive.org/details/kogama-maps-kgmexporter">archive.org</a>. Saved with <a href="https://github.com/imuarte/kgmexporter">kgmexporter</a>.</p>
+        <p class="sub">Preserved KoGaMa games.</p>
     </header>
 
     <section class="controls">
@@ -19,6 +19,11 @@
             <option value="www">www</option>
             <option value="br">br</option>
             <option value="friends">friends</option>
+        </select>
+        <select id="type">
+            <option value="">all files</option>
+            <option value="kgmap">.kgmap only</option>
+            <option value="kgm">.kgm only</option>
         </select>
         <select id="sort">
             <option value="date-desc">newest first</option>
@@ -57,6 +62,6 @@
         <p id="meta"></p>
     </footer>
 
-    <script src="app.js?v=2" defer></script>
+    <script src="app.js?v=3" defer></script>
 </body>
 </html>
