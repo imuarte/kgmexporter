@@ -2,6 +2,8 @@
 
 KoGaMa shut down, so kgmexporter is now about preserving the maps that were saved before it went offline.
 
+Browse the maps that have already been saved at **[imuarte.github.io/kgmexporter](https://imuarte.github.io/kgmexporter/)**.
+
 It does two things:
 
 - **Upload** - send your `.kgmap` files (or `.zip` / `.rar` / folders of them) to [archive.org](https://archive.org) so they don't get lost. Old legacy-format maps are skipped automatically.
