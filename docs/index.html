@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KoGaMa Map Archive - kgmexporter</title>
+    <link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+    <header>
+        <h1>KoGaMa Map Archive</h1>
+        <p class="sub">Preserved KoGaMa maps on <a href="https://archive.org/details/kogama-maps-kgmexporter">archive.org</a>. Saved with <a href="https://github.com/imuarte/kgmexporter">kgmexporter</a>.</p>
+    </header>
+
+    <section class="controls">
+        <input id="search" type="search" placeholder="Search by title, owner, or game id..." autofocus>
+        <select id="region">
+            <option value="">all regions</option>
+            <option value="www">www</option>
+            <option value="br">br</option>
+            <option value="friends">friends</option>
+        </select>
+        <select id="sort">
+            <option value="date-desc">newest first</option>
+            <option value="date-asc">oldest first</option>
+            <option value="title-asc">title A-Z</option>
+            <option value="size-desc">largest first</option>
+        </select>
+    </section>
+
+    <nav class="tabs">
+        <button id="tabMaps" class="active">Maps</button>
+        <button id="tabAuthors">Authors</button>
+    </nav>
+
+    <p id="ownerFilter" hidden></p>
+    <p id="status">loading...</p>
+
+    <main>
+        <table id="results">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Owner</th>
+                    <th>Region</th>
+                    <th>Saved</th>
+                    <th>Size</th>
+                    <th>Download</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <div id="authors" hidden></div>
+    </main>
+
+    <footer>
+        <p id="meta"></p>
+    </footer>
+
+    <script src="app.js?v=2" defer></script>
+</body>
+</html>

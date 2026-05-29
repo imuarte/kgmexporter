@@ -1,0 +1,87 @@
+body {
+    font-family: system-ui, sans-serif;
+    max-width: 1100px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    color: #222;
+    background: #fafafa;
+}
+
+header h1 { margin-bottom: 0.25rem; }
+header .sub { color: #555; font-size: 0.9rem; margin-top: 0; }
+
+.controls {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1rem 0;
+    flex-wrap: wrap;
+}
+.controls input { flex: 1 1 320px; padding: 0.4rem 0.6rem; font-size: 1rem; }
+.controls select { padding: 0.4rem 0.6rem; font-size: 0.95rem; }
+
+#status { color: #666; font-size: 0.9rem; }
+
+table { border-collapse: collapse; width: 100%; }
+th, td {
+    text-align: left;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid #e0e0e0;
+    font-size: 0.92rem;
+    vertical-align: top;
+}
+th { background: #f0f0f0; font-weight: 600; cursor: default; }
+tbody tr:hover { background: #f5f5f5; }
+td.num { font-variant-numeric: tabular-nums; color: #555; }
+
+a { color: #06c; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+nav.tabs {
+    display: flex;
+    gap: 0;
+    margin: 1rem 0 0.5rem;
+    border-bottom: 1px solid #ccc;
+}
+nav.tabs button {
+    padding: 0.35rem 1rem;
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+    background: transparent;
+    color: #555;
+    border: none;
+    border-bottom: 2px solid transparent;
+}
+nav.tabs button:hover { color: #222; }
+nav.tabs button.active { color: #222; border-bottom-color: #222; font-weight: 600; }
+
+#ownerFilter { font-size: 0.9rem; color: #555; margin: 0.5rem 0; }
+
+#authors {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 0.5rem;
+}
+#authors[hidden] { display: none; }
+.author {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.92rem;
+}
+.author:hover { background: #f5f5f5; border-color: #bbb; }
+.author .name { word-break: break-word; }
+.author .count {
+    color: #777;
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+footer { margin-top: 2rem; color: #888; font-size: 0.8rem; }
