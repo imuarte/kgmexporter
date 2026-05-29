@@ -278,6 +278,20 @@ public partial class MainWindow : Window
     private void QueueSingleKgmap(string filePath, bool dedup)
     {
         if (_archiveUploadQueue == null) return;
+
+        string fileName = Path.GetFileName(filePath);
+        var check = ClassifyKgmap(filePath);
+        if (check == KgmapCheck.TooOld)
+        {
+            Dispatch(() => SetStatus($"Skipped {fileName}: version too old (legacy mesh format).", error: true));
+            return;
+        }
+        if (check != KgmapCheck.Valid)
+        {
+            Dispatch(() => SetStatus($"Skipped {fileName}: not a valid .kgmap.", error: true));
+            return;
+        }
+
         try
         {
             _archiveUploadQueue.Enqueue(filePath, metadata: null, skipDuplicates: dedup);
@@ -292,7 +306,7 @@ public partial class MainWindow : Window
         if (token.IsCancellationRequested) return;
 
         string label = originLabel ?? folder;
-        int queued = 0, invalid = 0;
+        int queued = 0, invalid = 0, tooOld = 0;
         try
         {
             var files = Directory.EnumerateFiles(folder, "*.kgmap", SearchOption.AllDirectories).ToList();
@@ -305,7 +319,13 @@ public partial class MainWindow : Window
                 new ParallelOptions { MaxDegreeOfParallelism = 64, CancellationToken = token },
                 filePath =>
                 {
-                    if (!LooksLikeKgmap(filePath))
+                    var check = ClassifyKgmap(filePath);
+                    if (check == KgmapCheck.TooOld)
+                    {
+                        Interlocked.Increment(ref tooOld);
+                        return;
+                    }
+                    if (check != KgmapCheck.Valid)
                     {
                         Interlocked.Increment(ref invalid);
                         return;
@@ -334,6 +354,7 @@ public partial class MainWindow : Window
         Dispatch(() =>
         {
             string summary = $"Queued {queued} .kgmap file{(queued == 1 ? "" : "s")} from {label}";
+            if (tooOld > 0) summary += $", {tooOld} skipped (version too old - legacy mesh format)";
             if (invalid > 0) summary += $", {invalid} skipped as not valid .kgmap";
             SetStatus(summary + ".");
         });
@@ -345,7 +366,7 @@ public partial class MainWindow : Window
 
         string tempRoot = Path.Combine(Path.GetTempPath(), "kgmexporter-zip-" + Guid.NewGuid().ToString("N"));
         string label = Path.GetFileName(zipPath);
-        int queued = 0, invalid = 0;
+        int queued = 0, invalid = 0, tooOld = 0;
 
         try
         {
@@ -370,7 +391,13 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                if (!LooksLikeKgmap(outPath))
+                var check = ClassifyKgmap(outPath);
+                if (check == KgmapCheck.TooOld)
+                {
+                    tooOld++;
+                    continue;
+                }
+                if (check != KgmapCheck.Valid)
                 {
                     invalid++;
                     continue;
@@ -393,10 +420,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        int q = queued, inv = invalid;
+        int q = queued, inv = invalid, old = tooOld;
         Dispatch(() =>
         {
             string summary = $"Queued {q} .kgmap from {label}";
+            if (old > 0) summary += $", {old} skipped (version too old)";
             if (inv > 0) summary += $", {inv} skipped";
             SetStatus(summary + ".");
         });
@@ -408,7 +436,7 @@ public partial class MainWindow : Window
 
         string tempRoot = Path.Combine(Path.GetTempPath(), "kgmexporter-rar-" + Guid.NewGuid().ToString("N"));
         string label = Path.GetFileName(rarPath);
-        int queued = 0, invalid = 0;
+        int queued = 0, invalid = 0, tooOld = 0;
 
         try
         {
@@ -436,7 +464,13 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                if (!LooksLikeKgmap(outPath))
+                var check = ClassifyKgmap(outPath);
+                if (check == KgmapCheck.TooOld)
+                {
+                    tooOld++;
+                    continue;
+                }
+                if (check != KgmapCheck.Valid)
                 {
                     invalid++;
                     continue;
@@ -459,27 +493,46 @@ public partial class MainWindow : Window
             return;
         }
 
-        int q = queued, inv = invalid;
+        int q = queued, inv = invalid, old = tooOld;
         Dispatch(() =>
         {
             string summary = $"Queued {q} .kgmap from {label}";
+            if (old > 0) summary += $", {old} skipped (version too old)";
             if (inv > 0) summary += $", {inv} skipped";
             SetStatus(summary + ".");
         });
     }
 
-    private static bool LooksLikeKgmap(string filePath)
+    // .kgmap container versions: v2 = legacy baked-mesh format (released in
+    // kgmexporter v0.1.0), v5/v6 = raw GetGameBatch batches (v0.2.0+). Only the
+    // batch formats can be parsed/converted today, so anything older is dropped.
+    private const ushort MinSupportedKgmapVersion = 5;
+    private const uint KgmapMagic = 0x504D474B; // "KGMP"
+
+    private enum KgmapCheck { Valid, NotKgmap, TooOld }
+
+    // Reads the gzip + KGMP header to classify a .kgmap. Cheap: only the first
+    // few decompressed bytes (magic + version) are read.
+    private static KgmapCheck ClassifyKgmap(string filePath)
     {
         try
         {
             using var stream = File.OpenRead(filePath);
-            int b1 = stream.ReadByte();
-            int b2 = stream.ReadByte();
-            return b1 == 0x1F && b2 == 0x8B;
+            if (stream.ReadByte() != 0x1F || stream.ReadByte() != 0x8B)
+                return KgmapCheck.NotKgmap;
+
+            stream.Position = 0;
+            using var gz = new System.IO.Compression.GZipStream(stream, System.IO.Compression.CompressionMode.Decompress);
+            using var br = new BinaryReader(gz);
+
+            if (br.ReadUInt32() != KgmapMagic)
+                return KgmapCheck.NotKgmap;
+            ushort version = br.ReadUInt16();
+            return version < MinSupportedKgmapVersion ? KgmapCheck.TooOld : KgmapCheck.Valid;
         }
         catch
         {
-            return false;
+            return KgmapCheck.NotKgmap;
         }
     }
 
