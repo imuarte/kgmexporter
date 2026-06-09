@@ -20,39 +20,26 @@
     let view = 'maps';      // 'maps' | 'authors'
     let ownerFilter = null; // selected author key, or null
 
-    // Two data sources are merged:
-    //   index.json - .kgmap maps preserved on archive.org (download from there)
-    //   kgm.json   - .kgm games from the ReGaMa Discord archive (direct CDN link)
-    const loadIndex = fetch('index.json', { cache: 'no-cache' })
+    // All maps come from index.json (.kgmap + .kgm preserved on archive.org,
+    // permanent download links).
+    fetch('index.json', { cache: 'no-cache' })
         .then((r) => r.ok ? r.json() : Promise.reject(r.status))
-        .catch((err) => { console.warn('index.json failed:', err); return null; });
-
-    const loadKgm = fetch('kgm.json', { cache: 'no-cache' })
-        .then((r) => r.ok ? r.json() : Promise.reject(r.status))
-        .catch((err) => { console.warn('kgm.json failed:', err); return null; });
-
-    Promise.all([loadIndex, loadKgm])
-        .then(([index, kgm]) => {
-            if (!index && !kgm) {
+        .catch((err) => { console.warn('index.json failed:', err); return null; })
+        .then((index) => {
+            if (!index) {
                 statusEl.textContent = 'Failed to load index data.';
                 return;
             }
-            const kgmapMaps = (index && index.maps || []).map((m) => ({ ...m, Type: m.Type || 'kgmap' }));
-            // Drop .kgm games that already exist as a .kgmap: the archive.org
-            // copy is permanent, the Discord .kgm link is temporary. One row
-            // per game id, no duplicates across the two sources.
-            const haveKgmap = new Set(kgmapMaps.map((m) => String(m.GameId)).filter((id) => id && id !== 'undefined'));
-            const kgmMaps = (kgm && kgm.maps || [])
-                .filter((m) => !haveKgmap.has(String(m.GameId)))
-                .map((m) => ({ ...m, Type: m.Type || 'kgm' }));
-            allMaps = kgmapMaps.concat(kgmMaps);
+            allMaps = (index.maps || []).map((m) => ({ ...m, Type: m.Type || 'kgmap' }));
 
+            const nKgmap = allMaps.filter((m) => m.Type === 'kgmap').length;
+            const nKgm = allMaps.length - nKgmap;
             const parts = [];
-            if (kgmapMaps.length) parts.push(`${kgmapMaps.length} .kgmap`);
-            if (kgmMaps.length) parts.push(`${kgmMaps.length} .kgm`);
-            const when = index && index.generatedAt
+            if (nKgmap) parts.push(`${nKgmap} .kgmap`);
+            if (nKgm) parts.push(`${nKgm} .kgm`);
+            const when = index.generatedAt
                 ? new Date(index.generatedAt).toLocaleString()
-                : (kgm && kgm.generatedAt ? new Date(kgm.generatedAt).toLocaleString() : 'unknown');
+                : 'unknown';
             metaEl.textContent = `${allMaps.length} files (${parts.join(' + ')}) - index regenerated ${when}`;
             statusEl.textContent = '';
             render();
@@ -202,9 +189,11 @@
 
     function rowEl(m) {
         const tr = document.createElement('tr');
-        tr.appendChild(td(m.GameTitle || m.Name || ''));
+        const titleTd = td(m.GameTitle || m.Name || '', 'Title');
+        titleTd.className = 'title';
+        tr.appendChild(titleTd);
 
-        const ownerTd = document.createElement('td');
+        const ownerTd = td('', 'Owner');
         const owner = ownerKey(m);
         if (owner !== '(unknown)') {
             const a = document.createElement('a');
@@ -221,19 +210,23 @@
         }
         tr.appendChild(ownerTd);
 
-        tr.appendChild(td(m.Region || ''));
-        tr.appendChild(td(fmtDate(m.SavedAt || m.Mtime)));
-        const sizeTd = td(fmtSize(m.Size));
+        tr.appendChild(td(m.Region || '', 'Region'));
+        tr.appendChild(td(fmtDate(m.SavedAt || m.Mtime), 'Saved'));
+        const sizeTd = td(fmtSize(m.Size), 'Size');
         sizeTd.className = 'num';
         tr.appendChild(sizeTd);
-        const dl = document.createElement('td');
+        const dl = td('', 'Download');
         const a = document.createElement('a');
-        if (m.Type === 'kgm') {
-            a.href = m.Url || '#';
-            a.textContent = '.kgm';
+        // Every entry carries its own Url now: a direct file, or the .zip/.rar
+        // it lives in. Fall back to the legacy kgmexporter item for old data.
+        a.href = m.Url || `${ITEM_URL}/${encodeURIComponent(m.Name)}`;
+        const kind = m.Type === 'kgm' ? '.kgm' : '.kgmap';
+        if (m.Container) {
+            const ext = /\.rar$/i.test(m.Container) ? '.rar' : '.zip';
+            a.textContent = `${kind} (in ${ext})`;
+            a.title = `Inside ${m.Container}`;
         } else {
-            a.href = `${ITEM_URL}/${encodeURIComponent(m.Name)}`;
-            a.textContent = '.kgmap';
+            a.textContent = kind;
         }
         a.rel = 'noopener';
         dl.appendChild(a);
@@ -241,9 +234,10 @@
         return tr;
     }
 
-    function td(text) {
+    function td(text, label) {
         const el = document.createElement('td');
         el.textContent = text;
+        if (label) el.dataset.label = label;
         return el;
     }
 
