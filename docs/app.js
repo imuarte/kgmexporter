@@ -1,7 +1,7 @@
 (() => {
     'use strict';
 
-    const ITEM_URL = 'https://archive.org/download/kogama-maps-kgmexporter';
+    const DATA_URL = 'https://cdn.openkogama.org/games.json';
     const $ = (id) => document.getElementById(id);
     const statusEl = $('status');
     const tbody = $('results').querySelector('tbody');
@@ -17,30 +17,26 @@
     const ownerFilterEl = $('ownerFilter');
 
     let allMaps = [];
-    let view = 'maps';      // 'maps' | 'authors'
-    let ownerFilter = null; // selected author key, or null
+    let view = 'maps';
+    let ownerFilter = null;
 
-    // All maps come from index.json (.kgmap + .kgm preserved on archive.org,
-    // permanent download links).
-    fetch('index.json', { cache: 'no-cache' })
+    fetch(DATA_URL, { cache: 'no-cache' })
         .then((r) => r.ok ? r.json() : Promise.reject(r.status))
-        .catch((err) => { console.warn('index.json failed:', err); return null; })
-        .then((index) => {
-            if (!index) {
+        .catch((err) => { console.warn('games.json failed:', err); return null; })
+        .then((data) => {
+            if (!data) {
                 statusEl.textContent = 'Failed to load index data.';
                 return;
             }
-            allMaps = (index.maps || []).map((m) => ({ ...m, Type: m.Type || 'kgmap' }));
+            allMaps = data.games || [];
 
-            const nKgmap = allMaps.filter((m) => m.Type === 'kgmap').length;
+            const nKgmap = allMaps.filter((m) => m.format === 'kgmap').length;
             const nKgm = allMaps.length - nKgmap;
             const parts = [];
             if (nKgmap) parts.push(`${nKgmap} .kgmap`);
             if (nKgm) parts.push(`${nKgm} .kgm`);
-            const when = index.generatedAt
-                ? new Date(index.generatedAt).toLocaleString()
-                : 'unknown';
-            metaEl.textContent = `${allMaps.length} files (${parts.join(' + ')}) - index regenerated ${when}`;
+            const games = new Set(allMaps.filter((m) => m.id).map((m) => m.site + '/' + m.id)).size;
+            metaEl.textContent = `${allMaps.length} files (${parts.join(' + ')}) - ${games} distinct games`;
             statusEl.textContent = '';
             render();
         });
@@ -65,7 +61,7 @@
     }
 
     function ownerKey(m) {
-        return m.OwnerUsername || (m.OwnerProfileId ? '#' + m.OwnerProfileId : '(unknown)');
+        return m.authorName || (m.authorId ? '#' + m.authorId : '(unknown)');
     }
 
     function render() {
@@ -143,17 +139,16 @@
             rows = rows.filter((m) => ownerKey(m) === ownerFilter);
         }
         if (type) {
-            rows = rows.filter((m) => m.Type === type);
+            rows = rows.filter((m) => m.format === type);
         }
         if (q) {
             rows = rows.filter((m) =>
-                (m.GameTitle || '').toLowerCase().includes(q) ||
-                (m.OwnerUsername || '').toLowerCase().includes(q) ||
-                (m.GameId || '').toLowerCase().includes(q) ||
-                (m.Name || '').toLowerCase().includes(q));
+                (m.name || '').toLowerCase().includes(q) ||
+                (m.authorName || '').toLowerCase().includes(q) ||
+                (m.id || '').includes(q));
         }
         if (region) {
-            rows = rows.filter((m) => m.Region === region);
+            rows = rows.filter((m) => m.site === region);
         }
 
         rows = rows.slice();
@@ -162,10 +157,10 @@
                 rows.sort((a, b) => dateMs(a) - dateMs(b));
                 break;
             case 'title-asc':
-                rows.sort((a, b) => (a.GameTitle || a.Name || '').localeCompare(b.GameTitle || b.Name || ''));
+                rows.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
                 break;
             case 'size-desc':
-                rows.sort((a, b) => (b.Size || 0) - (a.Size || 0));
+                rows.sort((a, b) => (b.size || 0) - (a.size || 0));
                 break;
             case 'date-desc':
             default:
@@ -189,7 +184,7 @@
 
     function rowEl(m) {
         const tr = document.createElement('tr');
-        const titleTd = td(m.GameTitle || m.Name || '', 'Title');
+        const titleTd = td(m.name || (m.id ? '#' + m.id : ''), 'Title');
         titleTd.className = 'title';
         tr.appendChild(titleTd);
 
@@ -210,24 +205,17 @@
         }
         tr.appendChild(ownerTd);
 
-        tr.appendChild(td(m.Region || '', 'Region'));
-        tr.appendChild(td(fmtDate(m.SavedAt || m.Mtime), 'Saved'));
-        const sizeTd = td(fmtSize(m.Size), 'Size');
+        tr.appendChild(td(m.site || '', 'Region'));
+        tr.appendChild(td(fmtDate(savedDate(m)), 'Saved'));
+        const sizeTd = td(fmtSize(m.size), 'Size');
         sizeTd.className = 'num';
         tr.appendChild(sizeTd);
+
         const dl = td('', 'Download');
         const a = document.createElement('a');
-        // Every entry carries its own Url now: a direct file, or the .zip/.rar
-        // it lives in. Fall back to the legacy kgmexporter item for old data.
-        a.href = m.Url || `${ITEM_URL}/${encodeURIComponent(m.Name)}`;
-        const kind = m.Type === 'kgm' ? '.kgm' : '.kgmap';
-        if (m.Container) {
-            const ext = /\.rar$/i.test(m.Container) ? '.rar' : '.zip';
-            a.textContent = `${kind} (in ${ext})`;
-            a.title = `Inside ${m.Container}`;
-        } else {
-            a.textContent = kind;
-        }
+        a.href = (m.urls && m.urls[0]) || '#';
+        a.textContent = '.' + (m.format || 'kgmap');
+        a.title = m.sha256 || '';
         a.rel = 'noopener';
         dl.appendChild(a);
         tr.appendChild(dl);
@@ -241,19 +229,13 @@
         return el;
     }
 
+    function savedDate(m) {
+        return m.savedAt || m.publishedDate || m.createdDate || '';
+    }
+
     function dateMs(m) {
-        // kgm entries carry only SavedAt (ISO); kgmap entries carry Mtime
-        // (unix seconds) and usually SavedAt too. Normalise to a number so
-        // both kinds sort together.
-        if (m.SavedAt) {
-            const t = Date.parse(m.SavedAt);
-            if (!isNaN(t)) return t;
-        }
-        if (m.Mtime) {
-            const n = parseInt(m.Mtime, 10);
-            if (!isNaN(n)) return n * 1000;
-        }
-        return 0;
+        const t = Date.parse(savedDate(m));
+        return isNaN(t) ? 0 : t;
     }
 
     function fmtDate(s) {
