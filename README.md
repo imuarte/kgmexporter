@@ -2,7 +2,7 @@
 
 KoGaMa shut down, so kgmexporter is now about preserving the maps that were saved before it went offline.
 
-Browse the maps that have already been saved at **[imuarte.github.io/kgmexporter](https://imuarte.github.io/kgmexporter/)**.
+Browse the maps that have already been saved at **[openkogama.org/maps](https://openkogama.org/maps/)**.
 
 It does two things:
 
